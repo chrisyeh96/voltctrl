@@ -9,6 +9,96 @@ from tqdm.auto import tqdm
 import IPython.display
 
 
+class VoltPlotly:
+
+    TIME_TICKS =  [      0,    2400,    4800,    7200,    9600,   12000,   14400]  # noqa
+    TIME_LABELS = ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00', '24:00']  # noqa
+
+    def __init__(self, v_lims: tuple[float, float],
+                 q_lims: tuple[float, float], widget: bool | None = None):
+        """
+        Args
+        - v_lims: tuple of float (v_min, v_max), units kV (not squared)
+        - q_lims: tuple of float (q_min, q_max), units MVar
+        - widget: optional bool, whether using `%matplotlib widget`
+        """
+        from plotly.subplots import make_subplots
+        import plotly.graph_objects as go
+
+        self.is_showing = False
+
+        # Recreate Fig8 in Qu and Li (2020)
+        # - they count the substation as bus 1
+        # - we count the substation as bus -1
+        self.index = [9, 19, 22, 31, 40, 46, 55]
+
+        q_min, q_max = q_lims
+        v_min, v_max = v_lims
+
+        fig = make_subplots(rows=2, cols=2, shared_xaxes=True, subplot_titles=[
+            'Reactive power injection', 'Convergence of CMC',
+            'Voltage Profile', 'Voltage Profile Without Controller',
+        ])
+        fig = go.FigureWidget(fig)
+
+        fig.add_hline(row=1, col=1, y=q_min, line_dash='dash')
+        fig.add_hline(row=1, col=1, y=q_max, line_dash='dash')
+        fig.update_yaxes(row=1, col=1, title_text='Reactive Power (MVar)')
+
+        fig.update_yaxes(row=1, col=2, title_text=r'$||\hat{X} - X||_{\Delta}$')
+
+        for c in [1, 2]:
+            fig.add_hline(row=2, col=c, y=v_min, line_dash='dash')
+            fig.add_hline(row=2, col=c, y=v_max, line_dash='dash')
+            fig.update_yaxes(row=2, col=c, title_text='Voltage (kV)')
+            fig.update_xaxes(
+                row=2, col=c, title_text='time (hh:mm)', tickmode='array',
+                tickvals=self.TIME_TICKS, ticktext=self.TIME_LABELS)
+
+        # create empty plots, placeholders
+        n_buses = len(self.index)
+        for (r, c) in [(1, 1), (2, 1), (2, 2)]:
+            for i in np.asarray(self.index) - 2:
+                fig.add_scatter(row=r, col=c, x=[], y=[], mode='lines')
+        self.qcs_lines = fig.data[0:n_buses]
+        self.vs_lines = fig.data[n_buses:2*n_buses]
+        self.vpars_lines = fig.data[2*n_buses:3*n_buses]
+
+        fig.add_scatter(row=1, col=2, x=[], y=[], mode='lines', line_shape='vh')
+        self.dist_line = fig.data[-1]
+
+        self.fig = fig
+
+    def update(self, qcs: np.ndarray, vs: np.ndarray, vpars: np.ndarray,
+               dists: tuple[list, list]) -> None:
+        """
+        Args
+        - qcs: np.array, shape [n, T]
+        - vs: np.array, shape [n, T]
+        - vpars: np.array, shape [n, T]
+        """
+        fig = self.fig
+
+        ts = list(range(qcs.shape[1]))
+        # with fig.batch_update():
+        for l, i in enumerate(np.asarray(self.index) - 2):
+            self.qcs_lines[l].x = ts
+            self.qcs_lines[l].y = qcs[i]
+            self.vs_lines[l].x = ts
+            self.vs_lines[l].y = vs[i]
+            self.vpars_lines[l].x = ts
+            self.vpars_lines[l].y = vpars[i]
+        self.dist_line.x = dists[0]
+        self.dist_line.y = dists[1]
+
+    def show(self, clear_display: bool = False):
+        if clear_display:
+            IPython.display.clear_output()
+        if not self.is_showing:
+            self.fig.show()
+            self.is_showing = True
+
+
 class VoltPlot:
 
     TIME_TICKS =  [      0,    2400,    4800,    7200,    9600,   12000,   14400]  # noqa
