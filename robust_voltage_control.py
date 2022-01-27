@@ -159,51 +159,63 @@ def robust_voltage_control(
         v_min = np.ones(n) * v_min
         v_max = np.ones(n) * v_max
 
-    if isinstance(q_min, float):
-        rho = eps / (2 * (q_max - q_min) * np.sqrt(n))
+    if eta is None:
+        raise NotImplementedError  # we currently don't support learning eta
+        # is_learning_eta = True
+        # rho = eps / (2 + 2 * np.linalg.norm(np.ones(n) * (q_max-q_min), ord=2))
+        # etahat_prev = None
     else:
-        rho = eps / (2 * np.linalg.norm(q_max - q_min, ord=2))
+        is_learning_eta = False
+        rho = eps / (2 * np.linalg.norm(np.ones(n) * (q_max-q_min), ord=2))
     print(f'rho(eps={eps:.2f}) = {rho:.3f}')
 
     vs = np.zeros_like(p)  # vs[:, t] denotes v(t)
     qcs = np.zeros_like(p)  # qcs[:, t] denotes q^c(t)
-    vs_noaction = X @ qe + R @ p + v_sub
-    vs[:, 0] = vs_noaction[:, 0]
+    vpars = X @ qe + R @ p + v_sub  # vpars[:, t] denotes vpar(t)
+    vs[:, 0] = vpars[:, 0]
 
     # we need to use `u` as the variable instead of `qc_next` in order to
     # make the problem DPP-convex
     u = cp.Variable(n)
     slack = cp.Variable(nonneg=True)
 
+    # parameters are placeholders for given values
     vt = cp.Parameter(n)
     qct = cp.Parameter(n)
-    Xhat = cp.Parameter([n, n], nonneg=True)
+    Xhat = cp.Parameter([n, n], PSD=True)  # TODO: should this be nonneg or PSD?
+    if eta is None:
+        eta = cp.Parameter(nonneg=True)
 
     qc_next = qct + u
     v_next = vt + Xhat @ u
-    pad = eta + rho * cp.norm(u, p=1)
+    k = eta + rho * cp.norm(u, p=2)
 
     obj = cp.Minimize(cp.quad_form(v_next - v_nom, Pv)
                       + cp.quad_form(u, Pu)
                       + beta * slack**2)
     constraints = [
         q_min <= qc_next, qc_next <= q_max,
-        v_min + pad - slack <= v_next, v_next <= v_max - pad + slack
+        v_min + k - slack <= v_next, v_next <= v_max - k + slack
     ]
     prob = cp.Problem(objective=obj, constraints=constraints)
 
-    # if CBC problem is DPP, then it can be compiled for speedup
-    # - see https://www.cvxpy.org/tutorial/advanced/index.html#disciplined-parametrized-programming  # noqa
-    tqdm.write(f'CBC prob is DPP?: {prob.is_dcp(dpp=True)}')
+    # if cp.Problem is DPP, then it can be compiled for speedup
+    # - http://cvxpy.org/tutorial/advanced/index.html#disciplined-parametrized-programming
+    tqdm.write(f'Robust Oracle prob is DPP?: {prob.is_dcp(dpp=True)}')
 
     for t in tqdm(range(T-1)):
         # fill in Parameters
-        Xhat.value = sel.select()
+        if is_learning_eta:
+            Xhat.value, eta.value = sel.select()
+            update_dists(dists, t, Xhat.value, Xhat_prev, X, eta.value, etahat_prev)
+            Xhat_prev = np.array(Xhat.value)  # save a copy
+            etahat_prev = float(eta.value)  # save a copy
+        else:
+            Xhat.value = sel.select()
+            update_dists(dists, t, Xhat.value, Xhat_prev, X)
+            Xhat_prev = np.array(Xhat.value)  # save a copy
         qct.value = qcs[:, t]
         vt.value = vs[:, t]
-
-        update_dists(dists, t, Xhat.value, Xhat_prev, X)
-        Xhat_prev = Xhat.value
 
         try:
             prob.solve(warm_start=True)

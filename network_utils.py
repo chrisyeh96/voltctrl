@@ -97,6 +97,19 @@ def is_pos_def(A: np.ndarray) -> bool:
     else:
         return False
 
+def make_pd_and_pos(A: np.ndarray) -> None:
+    """
+    Tries to make matrix `A` PSD and entrywise positive.
+    Updates A in-place.
+    Guarantees output to be PSD. Does NOT guarantee entrywise positive.
+    """
+    A[:] = (A + A.T) / 2  # make symmetric
+    np.maximum(0, A, out=A)  # make positive, in-place
+    w, V = np.linalg.eigh(A)
+    if w[0] < 0:
+        w[w < 0] = 1e-7
+        A[:] = (V * w) @ V.T
+
 
 def create_R_X(r: np.ndarray, x: np.ndarray, G: nx.Graph
               ) -> tuple[np.ndarray, np.ndarray]:
