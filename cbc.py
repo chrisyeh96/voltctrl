@@ -13,7 +13,23 @@ def cp_triangle_norm_sq(x: cp.Expression) -> cp.Expression:
 
 
 class CBCProjection:
-    """Finds the set of X that is consistent with the observed data.
+    """Finds the set of X that is consistent with the observed data. Assumes
+    that noise bound (eta) is known.
+
+    In our implementation, we use a different indexing system than the paper.
+    Here, t = 0, ..., T
+    v(t) = X q^c(t) + vpar(t)
+    vpar(t) = X q^e(t) + R p(t) + v^0
+    u(t) = q^c(t-1) - q^c(t)
+    v(t+1) = v(t) + X u(t) + w(t)
+    w(t) = v(t+1) - v(t) - X u(t)
+         = vpar(t+1) - vpar(t)
+         = X[q^e(t+1) - q^e(t)] + R[p(t+1) - p(t)]
+
+    We assume that q^c(0) = 0, and that v(0) is given.
+
+    Usage:
+    TODO
     """
     def __init__(self, eta: float, n: int, T: int, n_samples: int,
                  alpha: float, v: np.ndarray, X_init: np.ndarray | None = None,
@@ -55,6 +71,11 @@ class CBCProjection:
         self.var_slack = cp.Variable(nonneg=True)
 
     def add_obs(self, v: np.ndarray, u: np.ndarray) -> None:
+        """
+        Args
+        - v: np.array, v(t+1)
+        - u: np.array, u(t) = q^c(t+1) - q^c(t)
+        """
         assert v.shape == (self.n,)
         assert u.shape == (self.n,)
         self.us[:, self.t] = u
@@ -65,7 +86,10 @@ class CBCProjection:
 
     def select(self) -> np.ndarray:
         """
-        When select() is called, we have seen self.t observations.
+        When select() is called, we have seen self.t observations. That is, we have values for:
+          v(0), ...,   v(t)    # recall:   v(t) = vs[:, t]
+        q^c(0), ..., q^c(t)    # recall: q^c(t) = qs[:, t]
+          u(0), ...,   u(t-1)  # recall:   u(t) = us[:, t]
         """
         if self.is_cached:
             return self.X_cache

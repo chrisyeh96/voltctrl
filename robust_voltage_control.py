@@ -68,36 +68,37 @@ class VoltPlot:
         # create empty plots, placeholders
         self.qcs_lines = []
         self.vs_lines = []
-        self.vs_noaction_lines = []
+        self.vpars_lines = []
         self.dist_line = axs[3].step([], [], where='post')[0]  # step-function
         for i in np.asarray(self.index) - 2:
             qcs_line, = axs[0].plot([], [], label=f'bus {i+2}')
             vs_line, = axs[1].plot([], [])
-            vs_noaction_line, = axs[2].plot([], [])
+            vpars_line, = axs[2].plot([], [])
 
             self.qcs_lines.append(qcs_line)
             self.vs_lines.append(vs_line)
-            self.vs_noaction_lines.append(vs_noaction_line)
+            self.vpars_lines.append(vpars_line)
 
         axs[0].legend()
         if widget:
             plt.show()
         else:
-            plt.close()  # so that the plot doesn't show
+            pass
+            # plt.close()  # so that the plot doesn't show
 
-    def update(self, qcs: np.ndarray, vs: np.ndarray, vs_noaction: np.ndarray,
+    def update(self, qcs: np.ndarray, vs: np.ndarray, vpars: np.ndarray,
                dists: tuple[list, list]) -> None:
         """
         Args
         - qcs: np.array, shape [n, T]
         - vs: np.array, shape [n, T]
-        - vs_noaction: np.array, shape [n, T]
+        - vpars: np.array, shape [n, T]
         """
         ts = range(qcs.shape[1])
         for l, i in enumerate(np.asarray(self.index) - 2):
             self.qcs_lines[l].set_data(ts, qcs[i])
             self.vs_lines[l].set_data(ts, vs[i])
-            self.vs_noaction_lines[l].set_data(ts, vs_noaction[i])
+            self.vpars_lines[l].set_data(ts, vpars[i])
         self.dist_line.set_data(dists)
         for ax in self.axs:
             ax.relim()
@@ -117,8 +118,9 @@ def robust_voltage_control(
         v_lims: tuple[Any, Any], q_lims: tuple[Any, Any], v_nom: Any,
         X: np.ndarray, R: np.ndarray,
         Pv: np.ndarray, Pu: np.ndarray,
-        eta: float, eps: float, v_sub: float, beta: float,
-        sel: Any, volt_plot: VoltPlot | None = None) -> np.ndarray:
+        eta: float | None, eps: float, v_sub: float, beta: float,
+        sel: Any, volt_plot: VoltPlot | None = None, volt_plot_update: int = 50,
+        ) -> np.ndarray:
     """Runs robust voltage control.
 
     Args
@@ -134,6 +136,8 @@ def robust_voltage_control(
     - Pv: np.array, shape [n, n], quadratic (PSD) cost matrix for voltage
     - Pu: np.array, shape [n, n], quadratic (PSD) cost matrix for control
     - eta: float, noise bound (kV^2)
+        - if None, assumes that eta is a model parameter that will be returned
+          by `sel`
     - eps: float, robustness buffer (kV^2)
     - v_sub: float, fixed squared voltage magnitude at substation (kV^2)
     - sel: nested convex body chasing object (e.g., CBCProjection)
@@ -143,6 +147,8 @@ def robust_voltage_control(
     """
     assert p.shape == qe.shape
     n, T = qe.shape
+
+    print(f'||X||_△ = {np_triangle_norm(X):.2f}', flush=True)
 
     dists = {'t': [], 'true': [], 'prev': []}
     Xhat_prev = None
@@ -211,17 +217,18 @@ def robust_voltage_control(
                 pdb.set_trace()
 
         qcs[:, t+1] = qc_next.value
-        vs[:, t+1] = vs_noaction[:, t+1] + X @ qc_next.value
+        vs[:, t+1] = vpars[:, t+1] + X @ qc_next.value
         sel.add_obs(v=vs[:, t+1], u=u.value)
         # tqdm.write(f't = {t}, ||u||_1 = {np.linalg.norm(u.value, 1)}')
 
-        if volt_plot is not None and (t+1) % 500 == 0:
+        if volt_plot is not None and (t+1) % volt_plot_update == 0:
             volt_plot.update(qcs=qcs[:, :t+2],
                              vs=np.sqrt(vs[:, :t+2]),
-                             vs_noaction=np.sqrt(vs_noaction[:, :t+2]),
+                             vpars=np.sqrt(vpars[:, :t+2]),
                              dists=(dists['t'], dists['true']))
-            volt_plot.show()
-    return vs, qcs
+            volt_plot.show(clear_display=False)
+
+    return vs, qcs, dists
 
 
 def np_triangle_norm(x: np.ndarray) -> float:
@@ -230,26 +237,34 @@ def np_triangle_norm(x: np.ndarray) -> float:
 
 
 def update_dists(dists: dict[str, list], t: int, Xhat: np.ndarray,
-                 Xhat_prev: np.ndarray | None, X: np.ndarray) -> None:
-    """Calculates ||Xhat-X||_△ and ||Xhat-Xhat_prev||_△.
+                 Xhat_prev: np.ndarray | None, X: np.ndarray,
+                 etahat: float | None = None, etahat_prev: float | None = None
+                 ) -> None:
+    """Calculates ||X̂-X||_△ and ||X̂-X̂_prev||_△.
 
     Args
     - dists: dict, keys ['t', 'true', 'prev'], values are lists
     - t: int, time step
     - Xhat: np.array, shape [n, n]
-    - Xhat_prev: np.array, shape [n, n]
+    - Xhat_prev: np.array, shape [n, n], or None
+        - this should generally only be None on the 1st time step
     - X: np.array, shape [n, n]
     """
     # here, we rely on the fact that the CBCProjection returns the existing
-    # variable Xhat if it doesn't need to move
-    if Xhat is not Xhat_prev:
+    # variable X̂ if it doesn't need to move
+    if Xhat_prev is None or not np.array_equal(Xhat, Xhat_prev):
         dist_true = np_triangle_norm(Xhat - X)
+        msg = f't = {t:6d}, ||X̂-X||_△ = {dist_true:7.1f}'
+
         if Xhat_prev is None:
             dist_prev = 0
         else:
             dist_prev = np_triangle_norm(Xhat - Xhat_prev)
-        tqdm.write(f't = {t:6d}, ||Xhat-X||_△ = {dist_true:7.1f}, '
-                   f'||Xhat-Xhat_prev||_△ = {dist_prev:5.3f}')
+            msg += f', ||X̂-X̂_prev||_△ = {dist_prev:5.3f}'
+            if etahat_prev is not None:
+                msg += (f', etahat = {etahat:5.3f}, '
+                        f'|etahat - etahat_prev| = {etahat - etahat_prev:5.3f}')
+        tqdm.write(msg)
 
         dists['t'].append(t)
         dists['true'].append(dist_true)
