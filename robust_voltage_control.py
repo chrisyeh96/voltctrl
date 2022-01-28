@@ -122,7 +122,7 @@ class VoltPlot:
         self.widget = widget
         tqdm.write(f'widget? {self.widget}')
 
-        fig, axs = plt.subplots(1, 4, figsize=(16, 4), tight_layout=True)
+        fig, axs = plt.subplots(1, 4, figsize=(16, 4), dpi=60, tight_layout=True)
         self.fig = fig
         self.axs = axs
 
@@ -145,11 +145,11 @@ class VoltPlot:
         ax.axhline(v_min, ls='--')
         ax.axhline(v_max, ls='--')
         ax.set_ylabel('Voltage (kV)')
-        ax.set_title('Voltage Profile without Controller')
+        ax.set_title('Voltage Profile, no Controller')
 
         ax = axs[3]
         ax.set_ylabel(r'$||\hat{X} - X||_{\Delta}$')
-        ax.set_title('Convergence of Consistent Model Chasing')
+        ax.set_title('Model Chasing Convergence')
 
         for ax in axs:
             ax.set_xticks(VoltPlot.TIME_TICKS)

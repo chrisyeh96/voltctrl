@@ -21,7 +21,7 @@ class CBCProjection:
     that noise bound (eta) is known.
 
     In our implementation, we use a different indexing system than the paper.
-    Here, t = 0, ..., T
+    For, t = 0, ..., T:
     v(t) = X q^c(t) + vpar(t)
     vpar(t) = X q^e(t) + R p(t) + v^0
     u(t) = q^c(t-1) - q^c(t)
@@ -65,11 +65,11 @@ class CBCProjection:
         self.X_true = X_true
 
         # history
-        self.vs = np.zeros([n, T+1])  # self.vs[:,t] is v(t)
+        self.vs = np.zeros([n, T+1])  # vs[:,t] = v(t)
         self.vs[:, 0] = v
-        self.v_prev = v
-        self.qs = np.zeros([n, T+1])  # self.qs[:,t] is q^c(t)
-        self.us = np.zeros([n, T])  # self.us[:,t] is u(t)
+        self.delta_vs = np.zeros([n, T])  # delta_vs[:,t] = v(t+1) - v(t)
+        self.us = np.zeros([n, T])  # us[:,t] = u(t) = q^c(t+1) - q^c(t)
+        self.qs = np.zeros([n, T+1])  # qs[:,t] = q^c(t)
         self.t = 0
 
         # define optimization variables
@@ -89,11 +89,12 @@ class CBCProjection:
         tqdm.write(f'X_init invalid. Violation: {total_violation:.3f}. Projecting into X_set.')
         obj = cp.Minimize(cp.norm(X_init - self.var_X))
         prob = cp.Problem(objective=obj, constraints=self.X_set)
-        prob.solve(eps=0.1, max_iters=100)
+        prob.solve(eps=0.05, max_iters=300)
         make_pd_and_pos(self.var_X.value)
         total_violation = sum(np.sum(constraint.violation()) for constraint in self.X_set)
         tqdm.write(f'After projection: X_init violation: {total_violation:.3f}.')
 
+        self.X_init = self.var_X.value.copy()  # make a copy
         self.X_cache = self.var_X.value.copy()  # make a copy
         self.is_cached = True
         self.prob = None  # cp.Problem
@@ -106,12 +107,12 @@ class CBCProjection:
         """
         assert v.shape == (self.n,)
         assert u.shape == (self.n,)
-        self.us[:, self.t] = u
-        self.qs[:, self.t+1] = self.qs[:, self.t] + u
+        t = self.t
+        self.vs[:, t+1] = v
+        self.delta_vs[:, t] = v - self.vs[:, t]
+        self.us[:, t] = u
+        self.qs[:, t+1] = self.qs[:, t] + u
         self.t += 1
-        self.vs[:, self.t] = v
-        # self.delta_vs[:, self.t] = v - self.v_prev  # TODO: consider removing
-        self.v_prev = v
         self.is_cached = False
 
     def select(self) -> np.ndarray:
@@ -120,6 +121,7 @@ class CBCProjection:
           v(0), ...,   v(t)    # recall:   v(t) = vs[:, t]
         q^c(0), ..., q^c(t)    # recall: q^c(t) = qs[:, t]
           u(0), ...,   u(t-1)  # recall:   u(t) = us[:, t]
+         Δv(0), ...,  Δv(t-1)  # recall:  Δv(t) = delta_vs[:, t]
         """
         if self.is_cached:
             return self.X_cache
@@ -128,7 +130,7 @@ class CBCProjection:
         assert t >= 1
 
         # be lazy if self.X_cache already satisfies the newest obs.
-        w_hat = self.vs[:, t] - self.vs[:, t-1] - self.X_cache @ self.us[:, t-1]
+        w_hat = self.delta_vs[:, t-1] - self.X_cache @ self.us[:, t-1]
         vpar_hat = self.vs[:, t] - self.X_cache @ self.qs[:, t]
         w_hat_norm = np.max(np.abs(w_hat))
         if (w_hat_norm <= self.eta
@@ -138,6 +140,7 @@ class CBCProjection:
             self.is_cached = True
             return self.X_cache
         tqdm.write(f't = {self.t:6d}, CBC pre opt ||ŵ(t)||∞: {w_hat_norm:.3f}')
+        indent = ' ' * 11
 
         n = self.n
         ub = self.eta  # * np.ones([n, 1])
@@ -152,7 +155,7 @@ class CBCProjection:
 
         # when t < self.n_samples, create a brand-new cp.Problem
         if t < self.n_samples:
-            w_hats = self.vs[:, 1:t+1] - self.vs[:, 0:t] - X @ self.us[:, 0:t]
+            w_hats = self.delta_vs[:, 0:t] - X @ self.us[:, 0:t]
             vpar_hats = self.vs[:, 0:t+1] - X @ self.qs[:, 0:t+1]
             constrs = self.X_set + [
                 lb - slack_w <= w_hats, w_hats <= ub + slack_w,
@@ -169,11 +172,11 @@ class CBCProjection:
             if self.prob is None:
                 Xprev = cp.Parameter([n, n], PSD=True, name='Xprev')
                 vs = cp.Parameter([n, self.n_samples], name='vs')
-                vs_next = cp.Parameter([n, self.n_samples], name='vs_next')
+                delta_vs = cp.Parameter([n, self.n_samples], name='delta_vs')
                 us = cp.Parameter([n, self.n_samples], name='us')
                 qs = cp.Parameter([n, self.n_samples], name='qs')
 
-                w_hats = vs_next - vs - X @ us
+                w_hats = delta_vs - X @ us
                 vpar_hats = vs - X @ qs
                 constrs = self.X_set + [
                     lb - slack_w <= w_hats, w_hats <= ub + slack_w,
@@ -190,7 +193,7 @@ class CBCProjection:
 
                 self.param_Xprev = Xprev
                 self.param_vs = vs
-                self.param_vs_next = vs_next
+                self.param_delta_vs = delta_vs
                 self.param_us = us
                 self.param_qs = qs
 
@@ -201,11 +204,11 @@ class CBCProjection:
             # - then sample additional previous time steps for self.n_samples total
             k = min(self.n_samples, 5)
             ts = np.concatenate([
-                np.arange(t-k, t),
+                np.arange(t-k+1, t+1),
                 rng.choice(t-k, size=self.n_samples-k, replace=False)])
 
             self.param_vs.value = self.vs[:, ts]
-            self.param_vs_next.value = self.vs[:, ts+1]
+            self.param_delta_vs.value = self.delta_vs[:, ts]
             self.param_us.value = self.us[:, ts]
             self.param_qs.value = self.qs[:, ts]
 
@@ -218,7 +221,7 @@ class CBCProjection:
             )
 
         if prob.status != 'optimal':
-            tqdm.write(f't = {self.t:6d}, CBC prob.status = {prob.status}')
+            tqdm.write(f'{indent} CBC prob.status = {prob.status}')
             if prob.status == 'infeasible':
                 import pdb
                 pdb.set_trace()
@@ -228,17 +231,17 @@ class CBCProjection:
 
         # check slack variable
         if slack_w.value > 0:
-            tqdm.write(f't = {self.t:6d}, CBC slack: {slack_w.value:.3f}')
+            tqdm.write(f'{indent} CBC slack: {slack_w.value:.3f}')
 
         # check whether constraints are satisfied for latest time step
-        w_hat = self.vs[:, t] - self.vs[:, t-1] - self.X_cache @ self.us[:, t-1]
+        w_hat = self.delta_vs[:, t-1] - self.X_cache @ self.us[:, t-1]
         vpar_hat = self.vs[:, t] - self.X_cache @ self.qs[:, t]
         w_hat_norm = np.max(np.abs(w_hat))
         tqdm.write(
-            f't = {self.t:6d}, CBC post opt: '
+            f'{indent} CBC post opt: '
             f'||ŵ(t)||∞: {w_hat_norm:.3f}, '
-            f'max(0, vpar_min - vpar_hat): {max(0, np.max(vpar_min - vpar_hat))}, '
-            f'max(0, vpar_hat - vpar_max): {max(0, np.max(vpar_hat - vpar_max))}')
+            f'max(0, vpar_min - vpar_hat): {max(0, np.max(self.Vpar_min - vpar_hat)):.3f}, '
+            f'max(0, vpar_hat - vpar_max): {max(0, np.max(vpar_hat - self.Vpar_max)):.3f}')
 
         return np.array(self.X_cache)  # return a copy
 
