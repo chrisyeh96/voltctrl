@@ -89,7 +89,8 @@ class CBCProjection:
         tqdm.write(f'X_init invalid. Violation: {total_violation:.3f}. Projecting into X_set.')
         obj = cp.Minimize(cp.norm(X_init - self.var_X))
         prob = cp.Problem(objective=obj, constraints=self.X_set)
-        prob.solve(eps=0.05, max_iters=300)
+        # prob.solve(eps=0.05, max_iters=300)
+        prob.solve(solver=cp.MOSEK)
         make_pd_and_pos(self.var_X.value)
         total_violation = sum(np.sum(constraint.violation()) for constraint in self.X_set)
         tqdm.write(f'After projection: X_init violation: {total_violation:.3f}.')
@@ -97,12 +98,51 @@ class CBCProjection:
         self.X_init = self.var_X.value.copy()  # make a copy
         self.X_cache = self.var_X.value.copy()  # make a copy
         self.is_cached = True
-        self.prob = None  # cp.Problem
+        self._setup_prob()
+
+    def _setup_prob(self):
+        n = self.n
+        ub = self.eta  # * np.ones([n, 1])
+        lb = -ub
+
+        vpar_min = self.Vpar_min.reshape(n, 1)
+        vpar_max = self.Vpar_max.reshape(n, 1)
+
+        # optimization variables
+        X = self.var_X
+        slack_w = self.var_slack_w
+
+        Xprev = cp.Parameter([n, n], PSD=True, name='Xprev')
+        vs = cp.Parameter([n, self.n_samples], name='vs')
+        delta_vs = cp.Parameter([n, self.n_samples], name='delta_vs')
+        us = cp.Parameter([n, self.n_samples], name='us')
+        qs = cp.Parameter([n, self.n_samples], name='qs')
+
+        w_hats = delta_vs - X @ us
+        vpar_hats = vs - X @ qs
+        constrs = self.X_set + [
+            lb - slack_w <= w_hats, w_hats <= ub + slack_w,
+            vpar_min <= vpar_hats, vpar_hats <= vpar_max
+        ]
+
+        obj = cp.Minimize(cp_triangle_norm_sq(X-Xprev)
+                          + self.alpha * slack_w)
+        self.prob = cp.Problem(objective=obj, constraints=constrs)
+
+        # if cp.Problem is DPP, then it can be compiled for speedup
+        # - http://cvxpy.org/tutorial/advanced/index.html#disciplined-parametrized-programming  # noqa
+        tqdm.write(f'CBC prob is DPP?: {self.prob.is_dcp(dpp=True)}')
+
+        self.param_Xprev = Xprev
+        self.param_vs = vs
+        self.param_delta_vs = delta_vs
+        self.param_us = us
+        self.param_qs = qs
 
     def add_obs(self, v: np.ndarray, u: np.ndarray) -> None:
         """
         Args
-        - v: np.array, v(t+1)
+        - v: np.array, v(t+1) = v(t) + X @ u(t) = X @ q^c(t+1) + vpar(t+1)
         - u: np.array, u(t) = q^c(t+1) - q^c(t)
         """
         assert v.shape == (self.n,)
@@ -139,15 +179,16 @@ class CBCProjection:
             # tqdm.write(f't = {self.t:6d}. CBC being lazy.')
             self.is_cached = True
             return self.X_cache
-        tqdm.write(f't = {self.t:6d}, CBC pre opt ||ŵ(t)||∞: {w_hat_norm:.3f}')
+        tqdm.write(
+            f't = {self.t:6d}, CBC pre opt: '
+            f'||ŵ(t)||∞: {w_hat_norm:.3f}, '
+            f'max(0, vpar_min - vpar_hat): {max(0, np.max(self.Vpar_min - vpar_hat)):.3f}, '
+            f'max(0, vpar_hat - vpar_max): {max(0, np.max(vpar_hat - self.Vpar_max)):.3f}')
         indent = ' ' * 11
 
         n = self.n
         ub = self.eta  # * np.ones([n, 1])
         lb = -ub
-
-        vpar_min = self.Vpar_min.reshape(n, 1)
-        vpar_max = self.Vpar_max.reshape(n, 1)
 
         # optimization variables
         X = self.var_X
@@ -155,70 +196,39 @@ class CBCProjection:
 
         # when t < self.n_samples, create a brand-new cp.Problem
         if t < self.n_samples:
-            w_hats = self.delta_vs[:, 0:t] - X @ self.us[:, 0:t]
-            vpar_hats = self.vs[:, 0:t+1] - X @ self.qs[:, 0:t+1]
-            constrs = self.X_set + [
-                lb - slack_w <= w_hats, w_hats <= ub + slack_w,
-                vpar_min <= vpar_hats, vpar_hats <= vpar_max
-            ]
-
-            obj = cp.Minimize(cp_triangle_norm_sq(X - self.X_cache)
-                              + self.alpha * slack_w)
-            prob = cp.Problem(objective=obj, constraints=constrs)
-            prob.solve(eps=0.1)
+            self.param_vs.value = np.ones([n, self.n_samples]) * self.Vpar_min.reshape(-1, 1)
+            self.param_vs.value[:, :t] = self.vs[:, 1:1+t]
+            self.param_delta_vs.value = self.delta_vs[:, :self.n_samples]
+            self.param_us.value = self.us[:, :self.n_samples]
+            self.param_qs.value = self.qs[:, 1:1+self.n_samples]
 
         # when t >= self.n_samples, compile a fixed-size optimization problem
         else:
-            if self.prob is None:
-                Xprev = cp.Parameter([n, n], PSD=True, name='Xprev')
-                vs = cp.Parameter([n, self.n_samples], name='vs')
-                delta_vs = cp.Parameter([n, self.n_samples], name='delta_vs')
-                us = cp.Parameter([n, self.n_samples], name='us')
-                qs = cp.Parameter([n, self.n_samples], name='qs')
-
-                w_hats = delta_vs - X @ us
-                vpar_hats = vs - X @ qs
-                constrs = self.X_set + [
-                    lb - slack_w <= w_hats, w_hats <= ub + slack_w,
-                    vpar_min <= vpar_hats, vpar_hats <= vpar_max
-                ]
-
-                obj = cp.Minimize(cp_triangle_norm_sq(X-Xprev)
-                                  + self.alpha * slack_w)
-                self.prob = cp.Problem(objective=obj, constraints=constrs)
-
-                # if cp.Problem is DPP, then it can be compiled for speedup
-                # - http://cvxpy.org/tutorial/advanced/index.html#disciplined-parametrized-programming  # noqa
-                tqdm.write(f'CBC prob is DPP?: {self.prob.is_dcp(dpp=True)}')
-
-                self.param_Xprev = Xprev
-                self.param_vs = vs
-                self.param_delta_vs = delta_vs
-                self.param_us = us
-                self.param_qs = qs
-
-            prob = self.prob
-
             # perform random sampling
-            # - use the most recent k (<=5) time steps
+            # - use the most recent k time steps  [t-k, ..., t-1]
             # - then sample additional previous time steps for self.n_samples total
-            k = min(self.n_samples, 5)
+            #   [0, ..., t-6]
+            k = min(self.n_samples, 20)
             ts = np.concatenate([
-                np.arange(t-k+1, t+1),
+                np.arange(t-k, t),
                 rng.choice(t-k, size=self.n_samples-k, replace=False)])
 
-            self.param_vs.value = self.vs[:, ts]
+            self.param_vs.value = self.vs[:, ts+1]
             self.param_delta_vs.value = self.delta_vs[:, ts]
             self.param_us.value = self.us[:, ts]
-            self.param_qs.value = self.qs[:, ts]
+            self.param_qs.value = self.qs[:, ts+1]
 
-            self.param_Xprev.value = self.X_cache
-            prob.solve(warm_start=True,
-                eps=0.05,  # SCS convergence tolerance (1e-4)
-                max_iters=200,  # SCS max iterations (2500)
-                # abstol=0.1, # ECOS (1e-8) / CVXOPT (1e-7) absolute accuracy
-                # reltol=0.1 # ECOS (1e-8) / CVXOPT (1e-6) relative accuracy
-            )
+        self.param_Xprev.value = self.X_cache
+
+        prob = self.prob
+        prob.solve(
+            solver=cp.MOSEK,
+            warm_start=True,
+            # eps=0.05,  # SCS convergence tolerance (1e-4)
+            # max_iters=300,  # SCS max iterations (2500)
+            # abstol=0.1, # ECOS (1e-8) / CVXOPT (1e-7) absolute accuracy
+            # reltol=0.1 # ECOS (1e-8) / CVXOPT (1e-6) relative accuracy
+        )
 
         if prob.status != 'optimal':
             tqdm.write(f'{indent} CBC prob.status = {prob.status}')
@@ -298,27 +308,41 @@ class CBCProjectionWithNoise(CBCProjection):
             delta_vs = self.delta_vs[:, :t]
 
             diffs = delta_vs - X @ us
-            # constrs = [X >= 0, lb + slack <= diffs, diffs <= ub - slack]
-            constrs = [X >= 0, lb <= diffs, diffs <= ub]
+            constrs = [X >= 0, lb <= diffs, diffs <= ub, eta <= self.eta]
+            # constrs = [X >= 0, lb + slack <= diffs, diffs <= ub - slack,
+            #            eta <= self.eta]
 
-            obj = cp.Minimize(cp.norm(X - self.X_cache, 'fro'))
-                # cp_triangle_norm_sq(X - self.X_cache)
-                #               - self.alpha * slack)
+            obj = cp.Minimize(cp_triangle_norm_sq(X - self.X_cache)
+                              + 1e3 * eta**2)
+            # obj = cp.Minimize(cp_triangle_norm_sq(X - self.X_cache)
+            #                   + (eta - self.eta_cache)**2 + eta**2)
+            # obj = cp.Minimize(cp_triangle_norm_sq(X - self.X_cache)
+            #                   + (eta - self.eta_cache)**2
+            #                   - self.alpha * slack)
             prob = cp.Problem(objective=obj, constraints=constrs)
-            prob.solve(verbose=True)
+            prob.solve()
 
         # when t >= self.n_samples, compile a fixed-size optimization problem
         else:
             if self.prob is None:
-                Xprev = cp.Parameter([n, n], PSD=True, name='Xprev')
+                Xprev = cp.Parameter([n, n], nonneg=True, name='Xprev')
+                etaprev = cp.Parameter(nonneg=True, name='eta')
                 us = cp.Parameter([n, self.n_samples], name='us')
                 delta_vs = cp.Parameter([n, self.n_samples], name='delta_vs')
 
                 diffs = delta_vs - X @ us
-                constrs = [X >= 0, lb + slack <= diffs, diffs <= ub - slack]
+                # constrs = [X >= 0, lb <= diffs, diffs <= ub, eta <= self.eta]
+                constrs = [X >= 0, lb + slack <= diffs, diffs <= ub - slack,
+                           etaprev <= eta, eta <= self.eta]
 
-                obj = cp.Minimize(cp_triangle_norm_sq(X-Xprev)
+                obj = cp.Minimize(cp_triangle_norm_sq(X - Xprev)
+                                  + 3e2 * eta**2
                                   - self.alpha * slack)
+                # obj = cp.Minimize(cp_triangle_norm_sq(X - Xprev)
+                #                   + (eta - etaprev)**2)
+                # obj = cp.Minimize(cp_triangle_norm_sq(X - Xprev)
+                #                   + (eta - etaprev)**2
+                #                   - self.alpha * slack)
                 self.prob = cp.Problem(objective=obj, constraints=constrs)
 
                 # if CBC problem is DPP, then it can be compiled for speedup
@@ -326,6 +350,7 @@ class CBCProjectionWithNoise(CBCProjection):
                 tqdm.write(f'CBC prob is DPP?: {self.prob.is_dcp(dpp=True)}')
 
                 self.param_Xprev = Xprev
+                self.param_etaprev = etaprev
                 self.param_us = us
                 self.param_delta_vs = delta_vs
 
@@ -335,13 +360,20 @@ class CBCProjectionWithNoise(CBCProjection):
             # - use the most recent k (<=5) time steps
             # - then sample additional previous time steps for 20 total
             k = min(self.n_samples, 5)
+            sample_probs = np.linalg.norm(
+                self.delta_vs[:, :t-k] - self.X_cache @ self.us[:, :t-k],
+                axis=0)
+            sample_probs /= np.sum(sample_probs)
             ts = np.concatenate([
                 np.arange(t-k, t),
-                rng.choice(t-k, size=self.n_samples-k, replace=False)])
+                rng.choice(t-k, size=self.n_samples-k, replace=False,
+                           p=sample_probs)
+            ])
             self.param_us.value = self.us[:, ts]
             self.param_delta_vs.value = self.delta_vs[:, ts]
 
             self.param_Xprev.value = self.X_cache
+            self.param_etaprev.value = self.eta_cache
             prob.solve(warm_start=True)
 
         if prob.status != 'optimal':
@@ -350,14 +382,31 @@ class CBCProjectionWithNoise(CBCProjection):
                 import pdb
                 pdb.set_trace()
         self.X_cache = np.array(X.value)  # make a copy
+        self.eta_cache = float(eta.value)  # make a copy
+
+        # Force symmetry, even if all-close. But only print error message if
+        # not all-close.
+        if not np.allclose(self.X_cache, self.X_cache.T):
+            max_diff = np.max(np.abs(self.X_cache - self.X_cache.T))
+            tqdm.write(f'optimal X not symmetric. ||X-X.T||_max = {max_diff}'
+                       ' - making symmetric')
+        self.X_cache = (self.X_cache + self.X_cache.T) / 2
+
+        # check for PSD
+        w, V = np.linalg.eigh(self.X_cache)
+        if np.any(w < 0):
+            tqdm.write(f'optimal X not PSD. smallest eigenvalue = {np.min(w)}'
+                       ' - setting neg eigenvalues to 0')
+            w[w < 0] = 0
+            self.X_cache = (V * w) @ V.T
 
         if np.any(self.X_cache < 0):
-            tqdm.write(f'optimal X has neg values. min={np.min(self.X_cache)}')
-            tqdm.write('- applying ReLu')
+            tqdm.write(f'optimal X has neg values. min={np.min(self.X_cache)}'
+                       ' - applying ReLu')
             self.X_cache = np.maximum(0, self.X_cache)
 
         self.is_cached = True
-        return self.X_cache
+        return (self.X_cache, self.eta_cache)
 
         # TODO: calculate Steiner point?
         # if self.t > n + 1:
