@@ -433,18 +433,22 @@ def psd_steiner_point(num_samples, X, constraints) -> np.ndarray:
     Args
     - num_samples: int, number of samples to use for calculating Steiner point
     - X: cp.Variable, shape [n, n]
-    - constraints: list, cvxpy constraints
+    - constraints: list, cvxpy constraints on X
     """
     n = X.shape[0]
-
     S = 0
+
+    param_theta = cp.Parameter(X.shape)
+    objective = cp.Maximize(cp.trace(param_theta @ X))
+    prob = cp.Problem(objective=objective, constraints=constraints)
+    assert prob.is_dcp(dpp=True)
+
     for i in range(num_samples):
         theta = rng.random(X.shape)
         theta = theta @ theta.T + 1e-7 * np.eye(n)  # random strictly PD matrix
         theta /= np.linalg.norm(theta, 'fro')  # unit norm
 
-        objective = cp.Maximize(cp.trace(theta @ X))
-        prob = cp.Problem(objective=objective, constraints=constraints)
+        param_theta.value = theta
         prob.solve()
         assert prob.status == 'optimal'
 
