@@ -155,6 +155,34 @@ class CBCProjection:
         self.t += 1
         self.is_cached = False
 
+    def _check_newest_obs(self) -> tuple[bool, str]:
+        """Checks whether self.X_cache satisfies the newest observation.
+
+        Returns:
+        - satisfied: bool, whether self.X_cache satisfies the newest observation
+        - msg: str, (if not satisfied) describes which constraints are not satisfied,
+            (if satisfied) is empty string ''
+        """
+        t = self.t
+
+        w_hat = self.delta_vs[:, t-1] - self.X_cache @ self.us[:, t-1]
+        vpar_hat = self.vs[:, t] - self.X_cache @ self.qs[:, t]
+        w_hat_norm = np.max(np.abs(w_hat))
+
+        vpar_lower_violation = np.max(self.Vpar_min - vpar_hat)
+        vpar_upper_violation = np.max(vpar_hat - self.Vpar_max)
+
+        msgs = []
+        if w_hat_norm > self.eta:
+            msgs.append(f'||ŵ(t)||∞: {w_hat_norm:.3f}')
+        if vpar_lower_violation > 0:
+            msgs.append(f'max(vpar_min - vpar_hat): {vpar_lower_violation:.3f}')
+        if vpar_upper_violation > 0:
+            msgs.append(f'max(vpar_hat - vpar_max): {vpar_upper_violation:.3f}')
+        satisfied = (len(msgs) == 0)
+        msg = ', '.join(msgs)
+        return satisfied, msg
+
     def select(self) -> np.ndarray:
         """
         When select() is called, we have seen self.t observations. That is, we have values for:
@@ -170,20 +198,12 @@ class CBCProjection:
         assert t >= 1
 
         # be lazy if self.X_cache already satisfies the newest obs.
-        w_hat = self.delta_vs[:, t-1] - self.X_cache @ self.us[:, t-1]
-        vpar_hat = self.vs[:, t] - self.X_cache @ self.qs[:, t]
-        w_hat_norm = np.max(np.abs(w_hat))
-        if (w_hat_norm <= self.eta
-                and np.all(self.Vpar_min <= vpar_hat)
-                and np.all(vpar_hat <= self.Vpar_max)):
+        satisfied, msg = self._check_newest_obs()
+        if satisfied:
             # tqdm.write(f't = {self.t:6d}. CBC being lazy.')
             self.is_cached = True
             return self.X_cache
-        tqdm.write(
-            f't = {self.t:6d}, CBC pre opt: '
-            f'||ŵ(t)||∞: {w_hat_norm:.3f}, '
-            f'max(0, vpar_min - vpar_hat): {max(0, np.max(self.Vpar_min - vpar_hat)):.3f}, '
-            f'max(0, vpar_hat - vpar_max): {max(0, np.max(vpar_hat - self.Vpar_max)):.3f}')
+        tqdm.write(f't = {self.t:6d}, CBC pre opt: {msg}')
         indent = ' ' * 11
 
         n = self.n
@@ -207,7 +227,7 @@ class CBCProjection:
             # perform random sampling
             # - use the most recent k time steps  [t-k, ..., t-1]
             # - then sample additional previous time steps for self.n_samples total
-            #   [0, ..., t-6]
+            #   [0, ..., t-k-1]
             k = min(self.n_samples, 20)
             ts = np.concatenate([
                 np.arange(t-k, t),
@@ -244,14 +264,9 @@ class CBCProjection:
             tqdm.write(f'{indent} CBC slack: {slack_w.value:.3f}')
 
         # check whether constraints are satisfied for latest time step
-        w_hat = self.delta_vs[:, t-1] - self.X_cache @ self.us[:, t-1]
-        vpar_hat = self.vs[:, t] - self.X_cache @ self.qs[:, t]
-        w_hat_norm = np.max(np.abs(w_hat))
-        tqdm.write(
-            f'{indent} CBC post opt: '
-            f'||ŵ(t)||∞: {w_hat_norm:.3f}, '
-            f'max(0, vpar_min - vpar_hat): {max(0, np.max(self.Vpar_min - vpar_hat)):.3f}, '
-            f'max(0, vpar_hat - vpar_max): {max(0, np.max(vpar_hat - self.Vpar_max)):.3f}')
+        satisfied, msg = self._check_newest_obs()
+        if not satisfied:
+            tqdm.write(f'{indent} CBC post opt: {msg}')
 
         return np.array(self.X_cache)  # return a copy
 
