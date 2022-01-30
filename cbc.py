@@ -65,12 +65,17 @@ class CBCProjection:
         self.X_true = X_true
 
         # history
-        self.vs = np.zeros([T+1, n])  # vs[t] = v(t)
-        self.vs[0] = v
-        self.delta_vs = np.zeros([T, n])  # delta_vs[t] = v(t+1) - v(t)
-        self.us = np.zeros([T, n])  # us[t] = u(t) = q^c(t+1) - q^c(t)
-        self.qs = np.zeros([T+1, n])  # qs[t] = q^c(t)
+        self.v = np.zeros([T+1, n])  # v[t] = v(t)
+        self.v[0] = v
+        self.delta_v = np.zeros([T, n])  # delta_v[t] = v(t+1) - v(t)
+        self.u = np.zeros([T, n])  # u[t] = u(t) = q^c(t+1) - q^c(t)
+        self.q = np.zeros([T+1, n])  # q[t] = q^c(t)
         self.t = 0
+
+        self.w_inds = np.zeros([2, T], dtype=bool)
+        self.vpar_inds = np.zeros([2, T+1], dtype=bool)
+        self.w_inds[:, 0] = True
+        self.vpar_inds[:, 1] = True
 
         # define optimization variables
         self.var_X = cp.Variable([n, n], PSD=True)
@@ -109,18 +114,36 @@ class CBCProjection:
         X = self.var_X
         slack_w = self.var_slack_w
 
-        Xprev = cp.Parameter([n, n], PSD=True, name='Xprev')
-        vs = cp.Parameter([self.n_samples, n], name='vs')
-        delta_vs = cp.Parameter([self.n_samples, n], name='delta_vs')
-        us = cp.Parameter([self.n_samples, n], name='us')
-        qs = cp.Parameter([self.n_samples, n], name='qs')
+        constrs = self.X_set
+        self.param = {}
 
-        w_hats = delta_vs - us @ X
-        vpar_hats = vs - qs @ X
-        constrs = self.X_set + [
-            lb - slack_w <= w_hats, w_hats <= ub + slack_w,
-            self.Vpar_min[None, :] <= vpar_hats, vpar_hats <= self.Vpar_max[None, :]
-        ]
+        Xprev = cp.Parameter([n, n], PSD=True, name='Xprev')
+        for b in ['lb', 'ub']:
+            vs = cp.Parameter([self.n_samples, n], name=f'vs_{b}')
+            delta_vs = cp.Parameter([self.n_samples, n], name=f'delta_vs_{b}')
+            us = cp.Parameter([self.n_samples, n], name=f'us_{b}')
+            qs = cp.Parameter([self.n_samples, n], name=f'qs_{b}')
+
+            w_hats = delta_vs - us @ X
+            vpar_hats = vs - qs @ X
+
+            if b == 'lb':
+                constrs.extend([lb - slack_w <= w_hats,
+                                self.Vpar_min[None, :] <= vpar_hats])
+            else:
+                constrs.extend([w_hats <= ub + slack_w,
+                                vpar_hats <= self.Vpar_max[None, :]])
+
+            self.param[f'vs_{b}'] = vs
+            self.param[f'delta_vs_{b}'] = delta_vs
+            self.param[f'us_{b}'] = us
+            self.param[f'qs_{b}'] = qs
+        self.param['Xprev'] = Xprev
+
+        # constrs = self.X_set + [
+        #     lb - slack_w <= w_hats, w_hats <= ub + slack_w,
+        #     self.Vpar_min[None, :] <= vpar_hats, vpar_hats <= self.Vpar_max[None, :]
+        # ]
 
         obj = cp.Minimize(cp_triangle_norm_sq(X-Xprev)
                           + self.alpha * slack_w)
@@ -130,11 +153,39 @@ class CBCProjection:
         # - http://cvxpy.org/tutorial/advanced/index.html#disciplined-parametrized-programming  # noqa
         tqdm.write(f'CBC prob is DPP?: {self.prob.is_dcp(dpp=True)}')
 
-        self.param_Xprev = Xprev
-        self.param_vs = vs
-        self.param_delta_vs = delta_vs
-        self.param_us = us
-        self.param_qs = qs
+        # self.param_Xprev = Xprev
+        # self.param_vs = vs
+        # self.param_delta_vs = delta_vs
+        # self.param_us = us
+        # self.param_qs = qs
+
+    def _check_informative(self, t: int, b: np.ndarray, c: np.ndarray,
+                           useful: np.ndarray) -> None:
+        """
+        Args
+        - t: int
+        - b, c: np.ndarray, shape [T, n]
+        - useful: np.ndarray, shape [2, T], boolean indexing vector
+            - 1st row is for lower bound, 2nd row is for upper bound
+        """
+        # manage contstraints of the form: d <= b - X c
+        # - each previous point (b',c') is useful if (b' ⋡ b) or (c' ⋠ c)
+        # - new point is useful if no other point has (b' ≼ b and c' ≽ c)
+        useful_lb = useful[0]
+        cmp_b = (b[t] >= b[useful_lb])
+        cmp_c = (c[t] <= c[useful_lb])
+        useful_lb[useful_lb] = np.any(cmp_b, axis=1) | np.any(cmp_c, axis=1)
+        useful_lb[t] = ~np.any(np.all(cmp_b, axis=1) & np.all(cmp_c, axis=1))
+
+        # manage constraints of the form: b - X c <= d
+        # - each previous point (b',c') is useful if (b' ⋠ b) or (c' ⋡ c)
+        # - new point is useful if no other point has (b' ≽ b and c' ≼ c)
+        useful_ub = useful[1]
+        cmp_b = (b[t] <= b[useful_ub])
+        cmp_c = (c[t] >= c[useful_ub])
+        useful_ub[useful_ub] = np.any(cmp_b, axis=1) | np.any(cmp_c, axis=1)
+        useful_ub[t] = ~np.any(np.all(cmp_b, axis=1) & np.all(cmp_c, axis=1))
+
 
     def add_obs(self, v: np.ndarray, u: np.ndarray) -> None:
         """
@@ -145,10 +196,32 @@ class CBCProjection:
         assert v.shape == (self.n,)
         assert u.shape == (self.n,)
         t = self.t
-        self.us[t] = u
-        self.delta_vs[t] = v - self.vs[t]
-        self.vs[t+1] = v
-        self.qs[t+1] = self.qs[t] + u
+        q = self.q[t] + u
+        delta_v = v - self.v[t]
+        self.u[t] = u
+        self.delta_v[t] = delta_v
+        self.v[t+1] = v
+        self.q[t+1] = q
+
+        if t >= 1:
+            self._check_informative(t=t, b=self.delta_v, c=self.u, useful=self.w_inds)
+            self._check_informative(t=t+1, b=self.v, c=self.q, useful=self.vpar_inds)
+
+            # cmp_delta = (delta_v <= self.delta_v[self.w_inds_ub])
+            # cmp_u = (u >= self.us[self.w_inds_ub])
+            # self.w_inds_ub[self.w_inds_ub] = np.any(cmp_delta, axis=1) | np.any(cmp_u, axis=1)
+            # self.w_inds_ub[t] = ~np.any(np.all(cmp_delta, axis=1) & np.all(cmp_u, axis=1))
+
+            # cmp_v = (v <= self.v[self.vpar_inds_ub])
+            # cmp_q = (q >= self.q[self.vpar_inds_ub])
+            # self.vpar_inds_ub[self.self.vpar_inds_ub] = np.any(cmp_v, axis=1) | np.any(cmp_u, axis=1)
+            # self.vpar_inds_ub[t] = ~np.any(np.all(cmp_delta, axis=1) & np.all(cmp_u, axis=1))
+
+            if (t+1) % 50 == 0:
+                num_w_inds = tuple(np.sum(self.w_inds[:t+1], axis=1))
+                num_vpar_inds = tuple(np.sum(self.vpar_inds[:t+2], axis=1))
+                tqdm.write(f'active constraints - w: {num_w_inds}/{t+1}, vpar: {num_vpar_inds}/{t+1}')
+
         self.t += 1
         self.is_cached = False
 
@@ -162,8 +235,8 @@ class CBCProjection:
         """
         t = self.t
 
-        w_hat = self.delta_vs[t-1] - self.us[t-1] @ self.X_cache
-        vpar_hat = self.vs[t] - self.qs[t] @ self.X_cache
+        w_hat = self.delta_v[t-1] - self.u[t-1] @ self.X_cache
+        vpar_hat = self.v[t] - self.q[t] @ self.X_cache
         w_hat_norm = np.max(np.abs(w_hat))
 
         vpar_lower_violation = np.max(self.Vpar_min - vpar_hat)
@@ -211,31 +284,50 @@ class CBCProjection:
         X = self.var_X
         slack_w = self.var_slack_w
 
-        # when t < self.n_samples, create a brand-new cp.Problem
+        # when t < self.n_samples
         if t < self.n_samples:
-            self.param_vs.value = np.tile(self.Vpar_min, [n, 1])
-            self.param_vs.value[:t] = self.vs[1:1+t]
-            self.param_delta_vs.value = self.delta_vs[:self.n_samples]
-            self.param_us.value = self.us[:self.n_samples]
-            self.param_qs.value = self.qs[1:1+self.n_samples]
+            for b in ['lb', 'ub']:
+                self.param[f'vs_{b}'].value = np.tile(self.Vpar_min, [self.n_samples, 1])
+                self.param[f'vs_{b}'].value[:t] = self.v[1:1+t]
+                self.param[f'delta_vs_{b}'].value = self.delta_v[:self.n_samples]
+                self.param[f'us_{b}'].value = self.u[:self.n_samples]
+                self.param[f'qs_{b}'].value = self.q[1:1+self.n_samples]
 
-        # when t >= self.n_samples, compile a fixed-size optimization problem
+        # when t >= self.n_samples
         else:
             # perform random sampling
             # - use the most recent k time steps  [t-k, ..., t-1]
             # - then sample additional previous time steps for self.n_samples total
             #   [0, ..., t-k-1]
             k = min(self.n_samples, 20)
-            ts = np.concatenate([
-                np.arange(t-k, t),
-                rng.choice(t-k, size=self.n_samples-k, replace=False)])
+            # ts = np.concatenate([
+            #     np.arange(t-k, t),
+            #     rng.choice(t-k, size=self.n_samples-k, replace=False)])
 
-            self.param_vs.value = self.vs[ts+1]
-            self.param_delta_vs.value = self.delta_vs[ts]
-            self.param_us.value = self.us[ts]
-            self.param_qs.value = self.qs[ts+1]
+            for i, b in enumerate(['lb', 'ub']):
+                w_inds = self.w_inds[i].nonzero()[0]
+                ts = np.concatenate([
+                    w_inds[-k:],
+                    rng.choice(len(w_inds) - k, size=self.n_samples-k, replace=False)
+                ])
+                self.param[f'delta_vs_{b}'].value = self.delta_v[ts]
+                self.param[f'us_{b}'].value = self.u[ts]
 
-        self.param_Xprev.value = self.X_cache
+                vpar_inds = self.vpar_inds[i].nonzero()[0]
+                ts = np.concatenate([
+                    vpar_inds[-k:],
+                    rng.choice(len(vpar_inds) - k, size=self.n_samples-k, replace=False)
+                ])
+                self.param[f'vs_{b}'].value = self.v[ts]
+                self.param[f'qs_{b}'].value = self.q[ts]
+
+            # self.param_vs.value = self.v[ts+1]
+            # self.param_delta_vs.value = self.delta_v[ts]
+            # self.param_us.value = self.us[ts]
+            # self.param_qs.value = self.q[ts+1]
+
+        # self.param_Xprev.value = self.X_cache
+        self.param['Xprev'].value = self.X_cache
 
         prob = self.prob
         prob.solve(
@@ -295,7 +387,7 @@ class CBCProjectionWithNoise(CBCProjection):
         assert t >= 1
 
         # be lazy if self.X_cache already satisfies the newest obs.
-        est_noise = self.delta_vs[:, t-1] - self.X_cache @ self.us[:, t-1]
+        est_noise = self.delta_v[:, t-1] - self.X_cache @ self.u[:, t-1]
         # tqdm.write(f'est_noise: {np.max(np.abs(est_noise)):.3f}')
         if np.max(np.abs(est_noise)) <= self.eta_cache:
             # buf = self.eta - np.max(np.abs(est_noise))
@@ -317,7 +409,7 @@ class CBCProjectionWithNoise(CBCProjection):
         # when t < self.n_samples, create a brand-new cp.Problem
         if t < self.n_samples:
             us = self.us[:, :t]
-            delta_vs = self.delta_vs[:, :t]
+            delta_vs = self.delta_v[:, :t]
 
             diffs = delta_vs - X @ us
             constrs = [X >= 0, lb <= diffs, diffs <= ub, eta <= self.eta]
@@ -373,7 +465,7 @@ class CBCProjectionWithNoise(CBCProjection):
             # - then sample additional previous time steps for 20 total
             k = min(self.n_samples, 5)
             sample_probs = np.linalg.norm(
-                self.delta_vs[:, :t-k] - self.X_cache @ self.us[:, :t-k],
+                self.delta_v[:, :t-k] - self.X_cache @ self.us[:, :t-k],
                 axis=0)
             sample_probs /= np.sum(sample_probs)
             ts = np.concatenate([
@@ -382,7 +474,7 @@ class CBCProjectionWithNoise(CBCProjection):
                            p=sample_probs)
             ])
             self.param_us.value = self.us[:, ts]
-            self.param_delta_vs.value = self.delta_vs[:, ts]
+            self.param_delta_vs.value = self.delta_v[:, ts]
 
             self.param_Xprev.value = self.X_cache
             self.param_etaprev.value = self.eta_cache
