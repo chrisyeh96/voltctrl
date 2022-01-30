@@ -355,7 +355,7 @@ def update_dists(dists: dict[str, list], t: int, Xhat: np.ndarray,
     # variable X̂ if it doesn't need to move
     if Xhat_prev is None or not np.array_equal(Xhat, Xhat_prev):
         dist_true = np_triangle_norm(Xhat - X)
-        msg = f't = {t:6d}, ||X̂-X||_△ = {dist_true:7.1f}'
+        msg = f't = {t:6d}, ||X̂-X||_△ = {dist_true:7.3f}'
 
         if Xhat_prev is None:
             dist_prev = 0

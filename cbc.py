@@ -217,7 +217,7 @@ class CBCProjection:
             # self.vpar_inds_ub[self.self.vpar_inds_ub] = np.any(cmp_v, axis=1) | np.any(cmp_u, axis=1)
             # self.vpar_inds_ub[t] = ~np.any(np.all(cmp_delta, axis=1) & np.all(cmp_u, axis=1))
 
-            if (t+1) % 50 == 0:
+            if (t+1) % 500 == 0:
                 num_w_inds = tuple(np.sum(self.w_inds[:t+1], axis=1))
                 num_vpar_inds = tuple(np.sum(self.vpar_inds[:t+2], axis=1))
                 tqdm.write(f'active constraints - w: {num_w_inds}/{t+1}, vpar: {num_vpar_inds}/{t+1}')
@@ -245,9 +245,9 @@ class CBCProjection:
         msgs = []
         if w_hat_norm > self.eta:
             msgs.append(f'||ŵ(t)||∞: {w_hat_norm:.3f}')
-        if vpar_lower_violation > 0:
+        if vpar_lower_violation > 0.05:
             msgs.append(f'max(vpar_min - vpar_hat): {vpar_lower_violation:.3f}')
-        if vpar_upper_violation > 0:
+        if vpar_upper_violation > 0.05:
             msgs.append(f'max(vpar_hat - vpar_max): {vpar_upper_violation:.3f}')
         satisfied = (len(msgs) == 0)
         msg = ', '.join(msgs)
