@@ -180,15 +180,15 @@ class VoltPlot:
                dists: tuple[list, list]) -> None:
         """
         Args
-        - qcs: np.array, shape [n, T]
-        - vs: np.array, shape [n, T]
-        - vpars: np.array, shape [n, T]
+        - qcs: np.array, shape [T, n]
+        - vs: np.array, shape [T, n]
+        - vpars: np.array, shape [T, n]
         """
-        ts = range(qcs.shape[1])
+        ts = range(qcs.shape[0])
         for l, i in enumerate(np.asarray(self.index) - 2):
-            self.qcs_lines[l].set_data(ts, qcs[i])
-            self.vs_lines[l].set_data(ts, vs[i])
-            self.vpars_lines[l].set_data(ts, vpars[i])
+            self.qcs_lines[l].set_data(ts, qcs[:, i])
+            self.vs_lines[l].set_data(ts, vs[:, i])
+            self.vpars_lines[l].set_data(ts, vpars[:, i])
         self.dist_line.set_data(dists)
         for ax in self.axs:
             ax.relim()
@@ -236,7 +236,9 @@ def robust_voltage_control(
     Returns: TODO
     """
     assert p.shape == qe.shape
-    n, T = qe.shape
+    p = p.T
+    qe = qe.T
+    T, n = qe.shape
 
     print(f'||X||_△ = {np_triangle_norm(X):.2f}', flush=True)
 
@@ -245,9 +247,6 @@ def robust_voltage_control(
 
     v_min, v_max = v_lims
     q_min, q_max = q_lims
-    if isinstance(v_min, float):
-        v_min = np.ones(n) * v_min
-        v_max = np.ones(n) * v_max
 
     if eta is None:
         raise NotImplementedError  # we currently don't support learning eta
@@ -259,10 +258,10 @@ def robust_voltage_control(
         rho = eps / (2 * np.linalg.norm(np.ones(n) * (q_max-q_min), ord=2))
     print(f'rho(eps={eps:.2f}) = {rho:.3f}')
 
-    vs = np.zeros_like(p)  # vs[:, t] denotes v(t)
-    qcs = np.zeros_like(p)  # qcs[:, t] denotes q^c(t)
-    vpars = X @ qe + R @ p + v_sub  # vpars[:, t] denotes vpar(t)
-    vs[:, 0] = vpars[:, 0]
+    vs = np.zeros_like(p)  # vs[t] denotes v(t)
+    qcs = np.zeros_like(p)  # qcs[t] denotes q^c(t)
+    vpars = qe @ X + p @ R + v_sub  # vpars[t] denotes vpar(t)
+    vs[0] = vpars[0]
 
     # we need to use `u` as the variable instead of `qc_next` in order to
     # make the problem DPP-convex
@@ -272,12 +271,12 @@ def robust_voltage_control(
     # parameters are placeholders for given values
     vt = cp.Parameter(n)
     qct = cp.Parameter(n)
-    Xhat = cp.Parameter([n, n], PSD=True)  # TODO: should this be nonneg or PSD?
+    Xhat = cp.Parameter([n, n], PSD=True)
     if eta is None:
         eta = cp.Parameter(nonneg=True)
 
     qc_next = qct + u
-    v_next = vt + Xhat @ u
+    v_next = vt + u @ Xhat
     k = eta + rho * cp.norm(u, p=2)
 
     obj = cp.Minimize(cp.quad_form(v_next - v_nom, Pv)
@@ -304,8 +303,8 @@ def robust_voltage_control(
             Xhat.value = sel.select()
             update_dists(dists, t, Xhat.value, Xhat_prev, X)
             Xhat_prev = np.array(Xhat.value)  # save a copy
-        qct.value = qcs[:, t]
-        vt.value = vs[:, t]
+        qct.value = qcs[t]
+        vt.value = vs[t]
 
         try:
             prob.solve(warm_start=True)
@@ -318,15 +317,15 @@ def robust_voltage_control(
                 import pdb
                 pdb.set_trace()
 
-        qcs[:, t+1] = qc_next.value
-        vs[:, t+1] = vpars[:, t+1] + X @ qc_next.value
-        sel.add_obs(v=vs[:, t+1], u=u.value)
+        qcs[t+1] = qc_next.value
+        vs[t+1] = vpars[t+1] + qc_next.value @ X
+        sel.add_obs(v=vs[t+1], u=u.value)
         # tqdm.write(f't = {t}, ||u||_1 = {np.linalg.norm(u.value, 1)}')
 
         if volt_plot is not None and (t+1) % volt_plot_update == 0:
-            volt_plot.update(qcs=qcs[:, :t+2],
-                             vs=np.sqrt(vs[:, :t+2]),
-                             vpars=np.sqrt(vpars[:, :t+2]),
+            volt_plot.update(qcs=qcs[:t+2],
+                             vs=np.sqrt(vs[:t+2]),
+                             vpars=np.sqrt(vpars[:t+2]),
                              dists=(dists['t'], dists['true']))
             volt_plot.show(clear_display=False)
 

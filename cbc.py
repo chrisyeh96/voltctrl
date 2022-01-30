@@ -65,11 +65,11 @@ class CBCProjection:
         self.X_true = X_true
 
         # history
-        self.vs = np.zeros([n, T+1])  # vs[:,t] = v(t)
-        self.vs[:, 0] = v
-        self.delta_vs = np.zeros([n, T])  # delta_vs[:,t] = v(t+1) - v(t)
-        self.us = np.zeros([n, T])  # us[:,t] = u(t) = q^c(t+1) - q^c(t)
-        self.qs = np.zeros([n, T+1])  # qs[:,t] = q^c(t)
+        self.vs = np.zeros([T+1, n])  # vs[t] = v(t)
+        self.vs[0] = v
+        self.delta_vs = np.zeros([T, n])  # delta_vs[t] = v(t+1) - v(t)
+        self.us = np.zeros([T, n])  # us[t] = u(t) = q^c(t+1) - q^c(t)
+        self.qs = np.zeros([T+1, n])  # qs[t] = q^c(t)
         self.t = 0
 
         # define optimization variables
@@ -105,24 +105,21 @@ class CBCProjection:
         ub = self.eta  # * np.ones([n, 1])
         lb = -ub
 
-        vpar_min = self.Vpar_min.reshape(n, 1)
-        vpar_max = self.Vpar_max.reshape(n, 1)
-
         # optimization variables
         X = self.var_X
         slack_w = self.var_slack_w
 
         Xprev = cp.Parameter([n, n], PSD=True, name='Xprev')
-        vs = cp.Parameter([n, self.n_samples], name='vs')
-        delta_vs = cp.Parameter([n, self.n_samples], name='delta_vs')
-        us = cp.Parameter([n, self.n_samples], name='us')
-        qs = cp.Parameter([n, self.n_samples], name='qs')
+        vs = cp.Parameter([self.n_samples, n], name='vs')
+        delta_vs = cp.Parameter([self.n_samples, n], name='delta_vs')
+        us = cp.Parameter([self.n_samples, n], name='us')
+        qs = cp.Parameter([self.n_samples, n], name='qs')
 
-        w_hats = delta_vs - X @ us
-        vpar_hats = vs - X @ qs
+        w_hats = delta_vs - us @ X
+        vpar_hats = vs - qs @ X
         constrs = self.X_set + [
             lb - slack_w <= w_hats, w_hats <= ub + slack_w,
-            vpar_min <= vpar_hats, vpar_hats <= vpar_max
+            self.Vpar_min[None, :] <= vpar_hats, vpar_hats <= self.Vpar_max[None, :]
         ]
 
         obj = cp.Minimize(cp_triangle_norm_sq(X-Xprev)
@@ -148,10 +145,10 @@ class CBCProjection:
         assert v.shape == (self.n,)
         assert u.shape == (self.n,)
         t = self.t
-        self.vs[:, t+1] = v
-        self.delta_vs[:, t] = v - self.vs[:, t]
-        self.us[:, t] = u
-        self.qs[:, t+1] = self.qs[:, t] + u
+        self.us[t] = u
+        self.delta_vs[t] = v - self.vs[t]
+        self.vs[t+1] = v
+        self.qs[t+1] = self.qs[t] + u
         self.t += 1
         self.is_cached = False
 
@@ -165,8 +162,8 @@ class CBCProjection:
         """
         t = self.t
 
-        w_hat = self.delta_vs[:, t-1] - self.X_cache @ self.us[:, t-1]
-        vpar_hat = self.vs[:, t] - self.X_cache @ self.qs[:, t]
+        w_hat = self.delta_vs[t-1] - self.us[t-1] @ self.X_cache
+        vpar_hat = self.vs[t] - self.qs[t] @ self.X_cache
         w_hat_norm = np.max(np.abs(w_hat))
 
         vpar_lower_violation = np.max(self.Vpar_min - vpar_hat)
@@ -186,10 +183,10 @@ class CBCProjection:
     def select(self) -> np.ndarray:
         """
         When select() is called, we have seen self.t observations. That is, we have values for:
-          v(0), ...,   v(t)    # recall:   v(t) = vs[:, t]
-        q^c(0), ..., q^c(t)    # recall: q^c(t) = qs[:, t]
-          u(0), ...,   u(t-1)  # recall:   u(t) = us[:, t]
-         Δv(0), ...,  Δv(t-1)  # recall:  Δv(t) = delta_vs[:, t]
+          v(0), ...,   v(t)    # recall:   v(t) = vs[t]
+        q^c(0), ..., q^c(t)    # recall: q^c(t) = qs[t]
+          u(0), ...,   u(t-1)  # recall:   u(t) = us[t]
+         Δv(0), ...,  Δv(t-1)  # recall:  Δv(t) = delta_vs[t]
         """
         if self.is_cached:
             return self.X_cache
@@ -216,11 +213,11 @@ class CBCProjection:
 
         # when t < self.n_samples, create a brand-new cp.Problem
         if t < self.n_samples:
-            self.param_vs.value = np.ones([n, self.n_samples]) * self.Vpar_min.reshape(-1, 1)
-            self.param_vs.value[:, :t] = self.vs[:, 1:1+t]
-            self.param_delta_vs.value = self.delta_vs[:, :self.n_samples]
-            self.param_us.value = self.us[:, :self.n_samples]
-            self.param_qs.value = self.qs[:, 1:1+self.n_samples]
+            self.param_vs.value = np.tile(self.Vpar_min, [n, 1])
+            self.param_vs.value[:t] = self.vs[1:1+t]
+            self.param_delta_vs.value = self.delta_vs[:self.n_samples]
+            self.param_us.value = self.us[:self.n_samples]
+            self.param_qs.value = self.qs[1:1+self.n_samples]
 
         # when t >= self.n_samples, compile a fixed-size optimization problem
         else:
@@ -233,10 +230,10 @@ class CBCProjection:
                 np.arange(t-k, t),
                 rng.choice(t-k, size=self.n_samples-k, replace=False)])
 
-            self.param_vs.value = self.vs[:, ts+1]
-            self.param_delta_vs.value = self.delta_vs[:, ts]
-            self.param_us.value = self.us[:, ts]
-            self.param_qs.value = self.qs[:, ts+1]
+            self.param_vs.value = self.vs[ts+1]
+            self.param_delta_vs.value = self.delta_vs[ts]
+            self.param_us.value = self.us[ts]
+            self.param_qs.value = self.qs[ts+1]
 
         self.param_Xprev.value = self.X_cache
 
