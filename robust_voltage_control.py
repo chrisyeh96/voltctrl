@@ -209,8 +209,8 @@ def robust_voltage_control(
         X: np.ndarray, R: np.ndarray,
         Pv: np.ndarray, Pu: np.ndarray,
         eta: float | None, eps: float, v_sub: float, beta: float,
-        sel: Any, volt_plot: VoltPlot | None = None, volt_plot_update: int = 50,
-        ) -> np.ndarray:
+        sel: Any, volt_plot: VoltPlot | None = None, volt_plot_update: int = 100,
+        ) -> tuple[np.ndarray, np.ndarray, dict[str, list]]:
     """Runs robust voltage control.
 
     Args
@@ -242,7 +242,7 @@ def robust_voltage_control(
 
     print(f'||X||_△ = {np_triangle_norm(X):.2f}', flush=True)
 
-    dists = {'t': [], 'true': [], 'prev': []}
+    dists: dict[str, list] = {'t': [], 'true': [], 'prev': []}
     X̂_prev = None
 
     v_min, v_max = v_lims
@@ -269,9 +269,9 @@ def robust_voltage_control(
     slack = cp.Variable(nonneg=True)
 
     # parameters are placeholders for given values
-    vt = cp.Parameter(n)
-    qct = cp.Parameter(n)
-    X̂ = cp.Parameter([n, n], PSD=True)
+    vt = cp.Parameter((n,))
+    qct = cp.Parameter((n,))
+    X̂ = cp.Parameter((n, n), PSD=True)
     if eta is None:
         eta = cp.Parameter(nonneg=True)
 
@@ -295,10 +295,11 @@ def robust_voltage_control(
     for t in tqdm(range(T-1)):
         # fill in Parameters
         if is_learning_eta:
-            X̂.value, eta.value = sel.select()
-            update_dists(dists, t, X̂.value, X̂_prev, X, eta.value, etahat_prev)
-            X̂_prev = np.array(X̂.value)  # save a copy
-            etahat_prev = float(eta.value)  # save a copy
+            raise NotImplementedError
+            # X̂.value, eta.value = sel.select()
+            # update_dists(dists, t, X̂.value, X̂_prev, X, eta.value, etahat_prev)
+            # X̂_prev = np.array(X̂.value)  # save a copy
+            # etahat_prev = float(eta.value)  # save a copy
         else:
             X̂.value = sel.select()
             update_dists(dists, t, X̂.value, X̂_prev, X)
@@ -339,7 +340,7 @@ def np_triangle_norm(x: np.ndarray) -> float:
 
 def update_dists(dists: dict[str, list], t: int, Xhat: np.ndarray,
                  Xhat_prev: np.ndarray | None, X: np.ndarray,
-                 etahat: float | None = None, etahat_prev: float | None = None
+                 # etahat: float | None = None, etahat_prev: float | None = None
                  ) -> None:
     """Calculates ||X̂-X||_△ and ||X̂-X̂_prev||_△.
 
@@ -358,13 +359,13 @@ def update_dists(dists: dict[str, list], t: int, Xhat: np.ndarray,
         msg = f't = {t:6d}, ||X̂-X||_△ = {dist_true:7.3f}'
 
         if Xhat_prev is None:
-            dist_prev = 0
+            dist_prev = 0.
         else:
             dist_prev = np_triangle_norm(Xhat - Xhat_prev)
             msg += f', ||X̂-X̂_prev||_△ = {dist_prev:5.3f}'
-            if etahat_prev is not None:
-                msg += (f', etahat = {etahat:5.3f}, '
-                        f'|etahat - etahat_prev| = {etahat - etahat_prev:5.3f}')
+            # if etahat_prev is not None:
+            #     msg += (f', etahat = {etahat:5.3f}, '
+            #             f'|etahat - etahat_prev| = {etahat - etahat_prev:5.3f}')
         tqdm.write(msg)
 
         dists['t'].append(t)

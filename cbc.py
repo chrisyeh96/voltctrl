@@ -9,6 +9,8 @@ from tqdm.auto import tqdm
 
 from network_utils import is_pos_def, make_pd_and_pos
 
+Constraint = cp.constraints.constraint.Constraint
+
 rng = np.random.default_rng()
 
 
@@ -57,7 +59,7 @@ class CBCProjection(CBCBase):
     """
     def __init__(self, eta: float, n: int, T: int, nsamples: int, alpha: float,
                  v: np.ndarray,
-                 gen_X_set: Callable[[cp.Variable], list[cp.Constraint]],
+                 gen_X_set: Callable[[cp.Variable], list[Constraint]],
                  Vpar: tuple[np.ndarray, np.ndarray],
                  X_init: np.ndarray | None = None,
                  X_true: np.ndarray | None = None):
@@ -384,157 +386,157 @@ class CBCProjection(CBCBase):
         #     steiner_point = psd_steiner_point(2, X, constraints)
 
 
-class CBCProjectionWithNoise(CBCProjection):
-    def __init__(self, eta: float, n: int, T: int, nsamples: int,
-                 alpha: float, v: np.ndarray, X_init: np.ndarray | None = None,
-                 X_true: np.ndarray | None = None):
-        """
-        Same args as CBCProjection. However, here, we interpret eta as an upper
-        limit on true noise.
-        """
-        super().__init__(eta, n, T, nsamples, alpha, v, X_init, X_true)
-        self.var_eta = cp.Variable(nonneg=True)
-        self.eta_cache = 0
+# class CBCProjectionWithNoise(CBCProjection):
+#     def __init__(self, eta: float, n: int, T: int, nsamples: int,
+#                  alpha: float, v: np.ndarray, X_init: np.ndarray | None = None,
+#                  X_true: np.ndarray | None = None):
+#         """
+#         Same args as CBCProjection. However, here, we interpret eta as an upper
+#         limit on true noise.
+#         """
+#         super().__init__(eta, n, T, nsamples, alpha, v, X_init, X_true)
+#         self.var_eta = cp.Variable(nonneg=True)
+#         self.eta_cache = 0
 
-    def select(self) -> tuple[np.ndarray, float]:
-        """
-        When select() is called, we have seen self.t observations.
-        """
-        if self.is_cached:
-            return self.X_cache, self.eta_cache
+#     def select(self) -> tuple[np.ndarray, float]:
+#         """
+#         When select() is called, we have seen self.t observations.
+#         """
+#         if self.is_cached:
+#             return self.X_cache, self.eta_cache
 
-        t = self.t
-        assert t >= 1
+#         t = self.t
+#         assert t >= 1
 
-        # be lazy if self.X_cache already satisfies the newest obs.
-        est_noise = self.delta_v[:, t-1] - self.X_cache @ self.u[:, t-1]
-        # tqdm.write(f'est_noise: {np.max(np.abs(est_noise)):.3f}')
-        if np.max(np.abs(est_noise)) <= self.eta_cache:
-            # buf = self.eta - np.max(np.abs(est_noise))
-            # self.lazy_buffer.append(buf)
-            # tqdm.write('being lazy')
-            self.is_cached = True
-            return self.X_cache, self.eta_cache
+#         # be lazy if self.X_cache already satisfies the newest obs.
+#         est_noise = self.delta_v[:, t-1] - self.X_cache @ self.u[:, t-1]
+#         # tqdm.write(f'est_noise: {np.max(np.abs(est_noise)):.3f}')
+#         if np.max(np.abs(est_noise)) <= self.eta_cache:
+#             # buf = self.eta - np.max(np.abs(est_noise))
+#             # self.lazy_buffer.append(buf)
+#             # tqdm.write('being lazy')
+#             self.is_cached = True
+#             return self.X_cache, self.eta_cache
 
-        n = self.n
+#         n = self.n
 
-        # optimization variables
-        X = self.var_X
-        slack = self.var_slack
-        eta = self.var_eta
+#         # optimization variables
+#         X = self.var_X
+#         slack = self.var_slack
+#         eta = self.var_eta
 
-        ub = self.var_eta  # * np.ones([n, 1])
-        lb = -ub
+#         ub = self.var_eta  # * np.ones([n, 1])
+#         lb = -ub
 
-        # when t < self.nsamples, create a brand-new cp.Problem
-        if t < self.nsamples:
-            us = self.us[:, :t]
-            delta_vs = self.delta_v[:, :t]
+#         # when t < self.nsamples, create a brand-new cp.Problem
+#         if t < self.nsamples:
+#             us = self.us[:, :t]
+#             delta_vs = self.delta_v[:, :t]
 
-            diffs = delta_vs - X @ us
-            constrs = [X >= 0, lb <= diffs, diffs <= ub, eta <= self.eta]
-            # constrs = [X >= 0, lb + slack <= diffs, diffs <= ub - slack,
-            #            eta <= self.eta]
+#             diffs = delta_vs - X @ us
+#             constrs = [X >= 0, lb <= diffs, diffs <= ub, eta <= self.eta]
+#             # constrs = [X >= 0, lb + slack <= diffs, diffs <= ub - slack,
+#             #            eta <= self.eta]
 
-            obj = cp.Minimize(cp_triangle_norm_sq(X - self.X_cache)
-                              + 1e3 * eta**2)
-            # obj = cp.Minimize(cp_triangle_norm_sq(X - self.X_cache)
-            #                   + (eta - self.eta_cache)**2 + eta**2)
-            # obj = cp.Minimize(cp_triangle_norm_sq(X - self.X_cache)
-            #                   + (eta - self.eta_cache)**2
-            #                   - self.alpha * slack)
-            prob = cp.Problem(objective=obj, constraints=constrs)
-            prob.solve()
+#             obj = cp.Minimize(cp_triangle_norm_sq(X - self.X_cache)
+#                               + 1e3 * eta**2)
+#             # obj = cp.Minimize(cp_triangle_norm_sq(X - self.X_cache)
+#             #                   + (eta - self.eta_cache)**2 + eta**2)
+#             # obj = cp.Minimize(cp_triangle_norm_sq(X - self.X_cache)
+#             #                   + (eta - self.eta_cache)**2
+#             #                   - self.alpha * slack)
+#             prob = cp.Problem(objective=obj, constraints=constrs)
+#             prob.solve()
 
-        # when t >= self.nsamples, compile a fixed-size optimization problem
-        else:
-            if self.prob is None:
-                Xprev = cp.Parameter([n, n], nonneg=True, name='Xprev')
-                etaprev = cp.Parameter(nonneg=True, name='eta')
-                us = cp.Parameter([n, self.nsamples], name='us')
-                delta_vs = cp.Parameter([n, self.nsamples], name='delta_vs')
+#         # when t >= self.nsamples, compile a fixed-size optimization problem
+#         else:
+#             if self.prob is None:
+#                 Xprev = cp.Parameter([n, n], nonneg=True, name='Xprev')
+#                 etaprev = cp.Parameter(nonneg=True, name='eta')
+#                 us = cp.Parameter([n, self.nsamples], name='us')
+#                 delta_vs = cp.Parameter([n, self.nsamples], name='delta_vs')
 
-                diffs = delta_vs - X @ us
-                # constrs = [X >= 0, lb <= diffs, diffs <= ub, eta <= self.eta]
-                constrs = [X >= 0, lb + slack <= diffs, diffs <= ub - slack,
-                           etaprev <= eta, eta <= self.eta]
+#                 diffs = delta_vs - X @ us
+#                 # constrs = [X >= 0, lb <= diffs, diffs <= ub, eta <= self.eta]
+#                 constrs = [X >= 0, lb + slack <= diffs, diffs <= ub - slack,
+#                            etaprev <= eta, eta <= self.eta]
 
-                obj = cp.Minimize(cp_triangle_norm_sq(X - Xprev)
-                                  + 3e2 * eta**2
-                                  - self.alpha * slack)
-                # obj = cp.Minimize(cp_triangle_norm_sq(X - Xprev)
-                #                   + (eta - etaprev)**2)
-                # obj = cp.Minimize(cp_triangle_norm_sq(X - Xprev)
-                #                   + (eta - etaprev)**2
-                #                   - self.alpha * slack)
-                self.prob = cp.Problem(objective=obj, constraints=constrs)
+#                 obj = cp.Minimize(cp_triangle_norm_sq(X - Xprev)
+#                                   + 3e2 * eta**2
+#                                   - self.alpha * slack)
+#                 # obj = cp.Minimize(cp_triangle_norm_sq(X - Xprev)
+#                 #                   + (eta - etaprev)**2)
+#                 # obj = cp.Minimize(cp_triangle_norm_sq(X - Xprev)
+#                 #                   + (eta - etaprev)**2
+#                 #                   - self.alpha * slack)
+#                 self.prob = cp.Problem(objective=obj, constraints=constrs)
 
-                # if CBC problem is DPP, then it can be compiled for speedup
-                # - see https://www.cvxpy.org/tutorial/advanced/index.html#disciplined-parametrized-programming  # noqa
-                tqdm.write(f'CBC prob is DPP?: {self.prob.is_dcp(dpp=True)}')
+#                 # if CBC problem is DPP, then it can be compiled for speedup
+#                 # - see https://www.cvxpy.org/tutorial/advanced/index.html#disciplined-parametrized-programming  # noqa
+#                 tqdm.write(f'CBC prob is DPP?: {self.prob.is_dcp(dpp=True)}')
 
-                self.param_Xprev = Xprev
-                self.param_etaprev = etaprev
-                self.param_us = us
-                self.param_delta_vs = delta_vs
+#                 self.param_Xprev = Xprev
+#                 self.param_etaprev = etaprev
+#                 self.param_us = us
+#                 self.param_delta_vs = delta_vs
 
-            prob = self.prob
+#             prob = self.prob
 
-            # perform random sampling
-            # - use the most recent k (<=5) time steps
-            # - then sample additional previous time steps for 20 total
-            k = min(self.nsamples, 5)
-            sample_probs = np.linalg.norm(
-                self.delta_v[:, :t-k] - self.X_cache @ self.us[:, :t-k],
-                axis=0)
-            sample_probs /= np.sum(sample_probs)
-            ts = np.concatenate([
-                np.arange(t-k, t),
-                rng.choice(t-k, size=self.nsamples-k, replace=False,
-                           p=sample_probs)
-            ])
-            self.param_us.value = self.us[:, ts]
-            self.param_delta_vs.value = self.delta_v[:, ts]
+#             # perform random sampling
+#             # - use the most recent k (<=5) time steps
+#             # - then sample additional previous time steps for 20 total
+#             k = min(self.nsamples, 5)
+#             sample_probs = np.linalg.norm(
+#                 self.delta_v[:, :t-k] - self.X_cache @ self.us[:, :t-k],
+#                 axis=0)
+#             sample_probs /= np.sum(sample_probs)
+#             ts = np.concatenate([
+#                 np.arange(t-k, t),
+#                 rng.choice(t-k, size=self.nsamples-k, replace=False,
+#                            p=sample_probs)
+#             ])
+#             self.param_us.value = self.us[:, ts]
+#             self.param_delta_vs.value = self.delta_v[:, ts]
 
-            self.param_Xprev.value = self.X_cache
-            self.param_etaprev.value = self.eta_cache
-            prob.solve(warm_start=True)
+#             self.param_Xprev.value = self.X_cache
+#             self.param_etaprev.value = self.eta_cache
+#             prob.solve(warm_start=True)
 
-        if prob.status != 'optimal':
-            tqdm.write(f'CBC prob.status = {prob.status}')
-            if prob.status == 'infeasible':
-                import pdb
-                pdb.set_trace()
-        self.X_cache = np.array(X.value)  # make a copy
-        self.eta_cache = float(eta.value)  # make a copy
+#         if prob.status != 'optimal':
+#             tqdm.write(f'CBC prob.status = {prob.status}')
+#             if prob.status == 'infeasible':
+#                 import pdb
+#                 pdb.set_trace()
+#         self.X_cache = np.array(X.value)  # make a copy
+#         self.eta_cache = float(eta.value)  # make a copy
 
-        # Force symmetry, even if all-close. But only print error message if
-        # not all-close.
-        if not np.allclose(self.X_cache, self.X_cache.T):
-            max_diff = np.max(np.abs(self.X_cache - self.X_cache.T))
-            tqdm.write(f'optimal X not symmetric. ||X-X.T||_max = {max_diff}'
-                       ' - making symmetric')
-        self.X_cache = (self.X_cache + self.X_cache.T) / 2
+#         # Force symmetry, even if all-close. But only print error message if
+#         # not all-close.
+#         if not np.allclose(self.X_cache, self.X_cache.T):
+#             max_diff = np.max(np.abs(self.X_cache - self.X_cache.T))
+#             tqdm.write(f'optimal X not symmetric. ||X-X.T||_max = {max_diff}'
+#                        ' - making symmetric')
+#         self.X_cache = (self.X_cache + self.X_cache.T) / 2
 
-        # check for PSD
-        w, V = np.linalg.eigh(self.X_cache)
-        if np.any(w < 0):
-            tqdm.write(f'optimal X not PSD. smallest eigenvalue = {np.min(w)}'
-                       ' - setting neg eigenvalues to 0')
-            w[w < 0] = 0
-            self.X_cache = (V * w) @ V.T
+#         # check for PSD
+#         w, V = np.linalg.eigh(self.X_cache)
+#         if np.any(w < 0):
+#             tqdm.write(f'optimal X not PSD. smallest eigenvalue = {np.min(w)}'
+#                        ' - setting neg eigenvalues to 0')
+#             w[w < 0] = 0
+#             self.X_cache = (V * w) @ V.T
 
-        if np.any(self.X_cache < 0):
-            tqdm.write(f'optimal X has neg values. min={np.min(self.X_cache)}'
-                       ' - applying ReLu')
-            self.X_cache = np.maximum(0, self.X_cache)
+#         if np.any(self.X_cache < 0):
+#             tqdm.write(f'optimal X has neg values. min={np.min(self.X_cache)}'
+#                        ' - applying ReLu')
+#             self.X_cache = np.maximum(0, self.X_cache)
 
-        self.is_cached = True
-        return (self.X_cache, self.eta_cache)
+#         self.is_cached = True
+#         return (self.X_cache, self.eta_cache)
 
-        # TODO: calculate Steiner point?
-        # if self.t > n + 1:
-        #     steiner_point = psd_steiner_point(2, X, constraints)
+#         # TODO: calculate Steiner point?
+#         # if self.t > n + 1:
+#         #     steiner_point = psd_steiner_point(2, X, constraints)
 
 
 def psd_steiner_point(num_samples, X, constraints) -> np.ndarray:
@@ -571,3 +573,5 @@ def psd_steiner_point(num_samples, X, constraints) -> np.ndarray:
     X.value = S
     for constr in constraints:
         constr.violation()
+    raise NotImplementedError
+    return None

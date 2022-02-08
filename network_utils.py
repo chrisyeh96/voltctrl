@@ -7,6 +7,7 @@ import networkx as nx
 import numpy as np
 import pandapower as pp
 import pandapower.topology
+import scipy.io
 
 
 T = TypeVar('T')
@@ -34,20 +35,33 @@ def create_56bus() -> pp.pandapowerNet:
     return net
 
 
-def create_R_X_from_net(net: pp.pandapowerNet) -> tuple[np.ndarray, np.ndarray]:
+def create_RX_from_net(net: pp.pandapowerNet, noise: float = 0, seed: int = 123,
+                      ) -> tuple[np.ndarray, np.ndarray]:
     """Creates R,X matrices from a pandapowerNet.
 
     Args
     - net: pandapowerNet with (n+1) buses including substation
+    - noise: float, optional uniform noise to add to impedances, values in [0,1]
+    - seed: int, for generating the uniform noise
 
     Returns: tuple (X, R)
     - X: np.array, shape [n, n], positive definite and entry-wise positive
     - R: np.array, shape [n, n], positive definite and entry-wise positive
     """
+    assert 0 <= noise <= 1, 'noise must be a float in [0,1]'
+
     # read in r and x matrices from data
     n = len(net.bus) - 1  # number of buses, excluding substation
     r = np.ones((n+1, n+1)) * np.inf
     x = np.ones((n+1, n+1)) * np.inf
+
+    if noise > 0:
+        rng = np.random.default_rng(seed)
+        noise_limit = net.line['r_ohm_per_km'] * noise
+        net.line['r_ohm_per_km'] += rng.uniform(-noise_limit, noise_limit)
+
+        noise_limit = net.line['x_ohm_per_km'] * noise
+        net.line['x_ohm_per_km'] += rng.uniform(-noise_limit, noise_limit)
 
     r[net.line['from_bus'], net.line['to_bus']] = net.line['r_ohm_per_km']
     r[net.line['to_bus'], net.line['from_bus']] = net.line['r_ohm_per_km']
@@ -55,7 +69,7 @@ def create_R_X_from_net(net: pp.pandapowerNet) -> tuple[np.ndarray, np.ndarray]:
     x[net.line['to_bus'], net.line['from_bus']] = net.line['x_ohm_per_km']
 
     G = pp.topology.create_nxgraph(net)
-    R, X = create_R_X(r, x, G)
+    R, X = create_RX_from_rx(r, x, G)
     return R, X
 
 
@@ -98,6 +112,7 @@ def is_pos_def(A: np.ndarray) -> bool:
     else:
         return False
 
+
 def make_pd_and_pos(A: np.ndarray) -> None:
     """
     Tries to make matrix `A` PSD and entrywise positive.
@@ -112,14 +127,14 @@ def make_pd_and_pos(A: np.ndarray) -> None:
         A[:] = (V * w) @ V.T
 
 
-def create_R_X(r: np.ndarray, x: np.ndarray, G: nx.Graph
-              ) -> tuple[np.ndarray, np.ndarray]:
+def create_RX_from_rx(r: np.ndarray, x: np.ndarray, G: nx.Graph
+                      ) -> tuple[np.ndarray, np.ndarray]:
     """Creates R,X matrices from line impedance matrices r and x.
 
     Args
     - r: np.array, shape [n+1, n+1], symmetric and entry-wise positive
     - x: np.array, shape [n+1, n+1], symmetric and entry-wise positive
-    - G: nx.Graph, graph
+    - G: nx.Graph, undirected graph
 
     Returns: tuple (X, R)
     - X: np.array, shape [n, n], positive definite and entry-wise positive
@@ -163,3 +178,70 @@ def calc_voltage_profile(X, R, p, qe, qc, v_sub) -> np.ndarray:
     - v: np.array, shape [n, T]
     """
     return X @ (qc + qe) + R @ p + v_sub
+
+
+def read_load_data() -> tuple[np.ndarray, np.ndarray]:
+    """Read in load data.
+
+    Returns
+    - p: np.array, shape [n, T], active load in MW, TODO sign
+    - q: np.array, shape [n, T], reactive load in MVar, TODO sign
+    """
+    mat = scipy.io.loadmat('data/pq_fluc.mat', squeeze_me=True)
+    pq_fluc = mat['pq_fluc']  # shape (55, 2, 14421)
+    p = pq_fluc[:, 0]  # active load, shape (55, 14421)
+    qe = pq_fluc[:, 1]  # reactive load
+    return p, qe
+
+
+def smooth(x: np.ndarray, w: int = 5) -> np.ndarray:
+    """Smooths input using moving-average window.
+
+    Edge values are preserved as-is without smoothing.
+
+    Args
+    - x: np.array, shape [T] or [n, T]
+    - w: int, moving average window, odd positive integer
+
+    Returns: np.array, same shape as x, smoothed
+    """
+    assert w % 2 == 1
+    edge = w // 2
+
+    x_smooth = x.copy()
+    ones = np.ones(w)
+    if len(x.shape) == 1:
+        x_smooth[edge:-edge] = np.convolve(x, ones, 'valid') / w
+    elif len(x.shape) == 2:
+        for i in range(len(x)):
+            x_smooth[i, edge:-edge] = np.convolve(x[i], ones, 'valid') / w
+    else:
+        raise ValueError('smooth() only works on 1D or 2D arrays')
+    return x_smooth
+
+
+def calc_max_norm_w(R: np.ndarray, X: np.ndarray, p: np.ndarray, qe: np.ndarray
+                   ) -> dict[str, np.ndarray]:
+    """Calculates ||w||_∞.
+
+    Args
+    - R: shape [n, n]
+    - X: shape [n, n]
+    - p: shape [n, T], active power load
+    - qe: shape [n, T], exogenous reactive load
+
+    Returns: norms, dict maps keys ['w', 'wp', 'wq'] to np.ndarray of shape [T]
+    """
+    wp = R @ (p[:, 1:] - p[:, :-1])
+    wq = X @ (qe[:, 1:] - qe[:, :-1])
+    w = wp + wq
+    norms = {
+        'w':  np.linalg.norm( w, ord=np.inf, axis=0),
+        'wp': np.linalg.norm(wp, ord=np.inf, axis=0),
+        'wq': np.linalg.norm(wq, ord=np.inf, axis=0)
+    }
+    # - max_p_idx: int, bus index with largest ||w_p||
+    # - max_q_idx: int, bus index with largest ||w_q||
+    # max_p_idx = np.argmax(np.max(np.abs(wp), axis=1))
+    # max_q_idx = np.argmax(np.max(np.abs(wq), axis=1))
+    return norms
