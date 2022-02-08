@@ -243,7 +243,7 @@ def robust_voltage_control(
     print(f'||X||_△ = {np_triangle_norm(X):.2f}', flush=True)
 
     dists = {'t': [], 'true': [], 'prev': []}
-    Xhat_prev = None
+    X̂_prev = None
 
     v_min, v_max = v_lims
     q_min, q_max = q_lims
@@ -271,12 +271,12 @@ def robust_voltage_control(
     # parameters are placeholders for given values
     vt = cp.Parameter(n)
     qct = cp.Parameter(n)
-    Xhat = cp.Parameter([n, n], PSD=True)
+    X̂ = cp.Parameter([n, n], PSD=True)
     if eta is None:
         eta = cp.Parameter(nonneg=True)
 
     qc_next = qct + u
-    v_next = vt + u @ Xhat
+    v_next = vt + u @ X̂
     k = eta + rho * cp.norm(u, p=2)
 
     obj = cp.Minimize(cp.quad_form(v_next - v_nom, Pv)
@@ -295,14 +295,14 @@ def robust_voltage_control(
     for t in tqdm(range(T-1)):
         # fill in Parameters
         if is_learning_eta:
-            Xhat.value, eta.value = sel.select()
-            update_dists(dists, t, Xhat.value, Xhat_prev, X, eta.value, etahat_prev)
-            Xhat_prev = np.array(Xhat.value)  # save a copy
+            X̂.value, eta.value = sel.select()
+            update_dists(dists, t, X̂.value, X̂_prev, X, eta.value, etahat_prev)
+            X̂_prev = np.array(X̂.value)  # save a copy
             etahat_prev = float(eta.value)  # save a copy
         else:
-            Xhat.value = sel.select()
-            update_dists(dists, t, Xhat.value, Xhat_prev, X)
-            Xhat_prev = np.array(Xhat.value)  # save a copy
+            X̂.value = sel.select()
+            update_dists(dists, t, X̂.value, X̂_prev, X)
+            X̂_prev = np.array(X̂.value)  # save a copy
         qct.value = qcs[t]
         vt.value = vs[t]
 

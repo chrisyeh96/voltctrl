@@ -16,7 +16,27 @@ def cp_triangle_norm_sq(x: cp.Expression) -> cp.Expression:
     return cp.norm(cp.upper_tri(x), 2)**2 + cp.norm(cp.diag(x), 2)**2
 
 
-class CBCProjection:
+class CBCBase:
+    def __init__(self, X_init: np.ndarray):
+        """
+        Args
+        - X_init: np.ndarray, initial guess for X
+        """
+        self.X_init = X_init
+
+    def add_obs(self, v: np.ndarray, u: np.ndarray) -> None:
+        """
+        Args
+        - v: np.array, v(t+1) = v(t) + X @ u(t) = X @ q^c(t+1) + vpar(t+1)
+        - u: np.array, u(t) = q^c(t+1) - q^c(t)
+        """
+        pass
+
+    def select(self) -> np.ndarray:
+        return self.X_init
+
+
+class CBCProjection(CBCBase):
     """Finds the set of X that is consistent with the observed data. Assumes
     that noise bound (eta) is known.
 
@@ -35,7 +55,7 @@ class CBCProjection:
     Usage:
     TODO
     """
-    def __init__(self, eta: float, n: int, T: int, n_samples: int, alpha: float,
+    def __init__(self, eta: float, n: int, T: int, nsamples: int, alpha: float,
                  v: np.ndarray,
                  gen_X_set: Callable[[cp.Variable], list[cp.Constraint]],
                  Vpar: tuple[np.ndarray, np.ndarray],
@@ -46,7 +66,7 @@ class CBCProjection:
         - eta: float, noise bound
         - n: int, # of buses
         - T: int, maximum # of time steps
-        - n_samples: int, # of observations to use for defining the convex set
+        - nsamples: int, # of observations to use for defining the convex set
         - alpha: float, weight on slack variable
         - v: np.array, shape [n], initial squared voltage magnitudes
         - gen_X_set: function, takes an optimization variable (cp.Variable) and returns
@@ -60,7 +80,7 @@ class CBCProjection:
         """
         self.eta = eta
         self.n = n
-        self.n_samples = n_samples
+        self.nsamples = nsamples
         self.alpha = alpha
         self.X_true = X_true
 
@@ -119,10 +139,10 @@ class CBCProjection:
 
         Xprev = cp.Parameter([n, n], PSD=True, name='Xprev')
         for b in ['lb', 'ub']:
-            vs = cp.Parameter([self.n_samples, n], name=f'vs_{b}')
-            delta_vs = cp.Parameter([self.n_samples, n], name=f'delta_vs_{b}')
-            us = cp.Parameter([self.n_samples, n], name=f'us_{b}')
-            qs = cp.Parameter([self.n_samples, n], name=f'qs_{b}')
+            vs = cp.Parameter([self.nsamples, n], name=f'vs_{b}')
+            delta_vs = cp.Parameter([self.nsamples, n], name=f'delta_vs_{b}')
+            us = cp.Parameter([self.nsamples, n], name=f'us_{b}')
+            qs = cp.Parameter([self.nsamples, n], name=f'qs_{b}')
 
             w_hats = delta_vs - us @ X
             vpar_hats = vs - qs @ X
@@ -284,31 +304,31 @@ class CBCProjection:
         X = self.var_X
         slack_w = self.var_slack_w
 
-        # when t < self.n_samples
-        if t < self.n_samples:
+        # when t < self.nsamples
+        if t < self.nsamples:
             for b in ['lb', 'ub']:
-                self.param[f'vs_{b}'].value = np.tile(self.Vpar_min, [self.n_samples, 1])
+                self.param[f'vs_{b}'].value = np.tile(self.Vpar_min, [self.nsamples, 1])
                 self.param[f'vs_{b}'].value[:t] = self.v[1:1+t]
-                self.param[f'delta_vs_{b}'].value = self.delta_v[:self.n_samples]
-                self.param[f'us_{b}'].value = self.u[:self.n_samples]
-                self.param[f'qs_{b}'].value = self.q[1:1+self.n_samples]
+                self.param[f'delta_vs_{b}'].value = self.delta_v[:self.nsamples]
+                self.param[f'us_{b}'].value = self.u[:self.nsamples]
+                self.param[f'qs_{b}'].value = self.q[1:1+self.nsamples]
 
-        # when t >= self.n_samples
+        # when t >= self.nsamples
         else:
             # perform random sampling
             # - use the most recent k time steps  [t-k, ..., t-1]
-            # - then sample additional previous time steps for self.n_samples total
+            # - then sample additional previous time steps for self.nsamples total
             #   [0, ..., t-k-1]
-            k = min(self.n_samples, 20)
+            k = min(self.nsamples, 20)
             # ts = np.concatenate([
             #     np.arange(t-k, t),
-            #     rng.choice(t-k, size=self.n_samples-k, replace=False)])
+            #     rng.choice(t-k, size=self.nsamples-k, replace=False)])
 
             for i, b in enumerate(['lb', 'ub']):
                 w_inds = self.w_inds[i].nonzero()[0]
                 ts = np.concatenate([
                     w_inds[-k:],
-                    rng.choice(len(w_inds) - k, size=self.n_samples-k, replace=False)
+                    rng.choice(len(w_inds) - k, size=self.nsamples-k, replace=False)
                 ])
                 self.param[f'delta_vs_{b}'].value = self.delta_v[ts]
                 self.param[f'us_{b}'].value = self.u[ts]
@@ -316,7 +336,7 @@ class CBCProjection:
                 vpar_inds = self.vpar_inds[i].nonzero()[0]
                 ts = np.concatenate([
                     vpar_inds[-k:],
-                    rng.choice(len(vpar_inds) - k, size=self.n_samples-k, replace=False)
+                    rng.choice(len(vpar_inds) - k, size=self.nsamples-k, replace=False)
                 ])
                 self.param[f'vs_{b}'].value = self.v[ts]
                 self.param[f'qs_{b}'].value = self.q[ts]
@@ -365,14 +385,14 @@ class CBCProjection:
 
 
 class CBCProjectionWithNoise(CBCProjection):
-    def __init__(self, eta: float, n: int, T: int, n_samples: int,
+    def __init__(self, eta: float, n: int, T: int, nsamples: int,
                  alpha: float, v: np.ndarray, X_init: np.ndarray | None = None,
                  X_true: np.ndarray | None = None):
         """
         Same args as CBCProjection. However, here, we interpret eta as an upper
         limit on true noise.
         """
-        super().__init__(eta, n, T, n_samples, alpha, v, X_init, X_true)
+        super().__init__(eta, n, T, nsamples, alpha, v, X_init, X_true)
         self.var_eta = cp.Variable(nonneg=True)
         self.eta_cache = 0
 
@@ -406,8 +426,8 @@ class CBCProjectionWithNoise(CBCProjection):
         ub = self.var_eta  # * np.ones([n, 1])
         lb = -ub
 
-        # when t < self.n_samples, create a brand-new cp.Problem
-        if t < self.n_samples:
+        # when t < self.nsamples, create a brand-new cp.Problem
+        if t < self.nsamples:
             us = self.us[:, :t]
             delta_vs = self.delta_v[:, :t]
 
@@ -426,13 +446,13 @@ class CBCProjectionWithNoise(CBCProjection):
             prob = cp.Problem(objective=obj, constraints=constrs)
             prob.solve()
 
-        # when t >= self.n_samples, compile a fixed-size optimization problem
+        # when t >= self.nsamples, compile a fixed-size optimization problem
         else:
             if self.prob is None:
                 Xprev = cp.Parameter([n, n], nonneg=True, name='Xprev')
                 etaprev = cp.Parameter(nonneg=True, name='eta')
-                us = cp.Parameter([n, self.n_samples], name='us')
-                delta_vs = cp.Parameter([n, self.n_samples], name='delta_vs')
+                us = cp.Parameter([n, self.nsamples], name='us')
+                delta_vs = cp.Parameter([n, self.nsamples], name='delta_vs')
 
                 diffs = delta_vs - X @ us
                 # constrs = [X >= 0, lb <= diffs, diffs <= ub, eta <= self.eta]
@@ -463,14 +483,14 @@ class CBCProjectionWithNoise(CBCProjection):
             # perform random sampling
             # - use the most recent k (<=5) time steps
             # - then sample additional previous time steps for 20 total
-            k = min(self.n_samples, 5)
+            k = min(self.nsamples, 5)
             sample_probs = np.linalg.norm(
                 self.delta_v[:, :t-k] - self.X_cache @ self.us[:, :t-k],
                 axis=0)
             sample_probs /= np.sum(sample_probs)
             ts = np.concatenate([
                 np.arange(t-k, t),
-                rng.choice(t-k, size=self.n_samples-k, replace=False,
+                rng.choice(t-k, size=self.nsamples-k, replace=False,
                            p=sample_probs)
             ])
             self.param_us.value = self.us[:, ts]
