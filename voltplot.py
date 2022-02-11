@@ -74,11 +74,12 @@ class VoltPlotly:
         - qcs: np.array, shape [n, T]
         - vs: np.array, shape [n, T]
         - vpars: np.array, shape [n, T]
+        - dists: tuple of lists (ts, dists_true)
+            - ts: list of int, time steps at which the model was updated
+            - dists_true: list of float, ||X̂-X||_△ after each model update
         """
-        fig = self.fig
-
         ts = list(range(qcs.shape[1]))
-        # with fig.batch_update():
+        # with self.fig.batch_update():
         for l, i in enumerate(np.asarray(self.index) - 2):
             self.qcs_lines[l].x = ts
             self.qcs_lines[l].y = qcs[i]
@@ -89,7 +90,7 @@ class VoltPlotly:
         self.dist_line.x = dists[0]
         self.dist_line.y = dists[1]
 
-    def show(self, clear_display: bool = False):
+    def show(self, clear_display: bool = False) -> None:
         if clear_display:
             IPython.display.clear_output()
         if not self.is_showing:
@@ -178,18 +179,24 @@ class VoltPlot:
         - qcs: np.array, shape [T, n]
         - vs: np.array, shape [T, n]
         - vpars: np.array, shape [T, n]
+        - dists: tuple of lists (ts, dists_true)
+            - ts: list of int, time steps at which the model was updated
+            - dists_true: list of float, ||X̂-X||_△ after each model update
         """
         ts = range(qcs.shape[0])
         for l, i in enumerate(np.asarray(self.index) - 2):
             self.qcs_lines[l].set_data(ts, qcs[:, i])
             self.vs_lines[l].set_data(ts, vs[:, i])
             self.vpars_lines[l].set_data(ts, vpars[:, i])
-        self.dist_line.set_data(dists)
+
+        # extend out self.dist_line to match other plots
+        self.dist_line.set_data(dists[0] + [ts[-1]], dists[1] + dists[1][-1])
+
         for ax in self.axs:
             ax.relim()
             ax.autoscale_view()
 
-    def show(self, clear_display: bool = False):
+    def show(self, clear_display: bool = False) -> None:
         if clear_display:
             IPython.display.clear_output()
         if self.widget:

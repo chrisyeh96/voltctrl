@@ -163,7 +163,9 @@ def create_RX_from_rx(r: np.ndarray, x: np.ndarray, G: nx.Graph
     return R, X
 
 
-def calc_voltage_profile(X, R, p, qe, qc, v_sub) -> np.ndarray:
+def calc_voltage_profile(X: np.ndarray, R: np.ndarray, p: np.ndarray,
+                         qe: np.ndarray, qc: np.ndarray, v_sub: float
+                         ) -> np.ndarray:
     """Calculates the voltage profile using the simplified linear model.
 
     Args

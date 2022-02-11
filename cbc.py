@@ -7,11 +7,9 @@ import cvxpy as cp
 import numpy as np
 from tqdm.auto import tqdm
 
-from network_utils import is_pos_def, make_pd_and_pos
+from network_utils import make_pd_and_pos
 
 Constraint = cp.constraints.constraint.Constraint
-
-rng = np.random.default_rng()
 
 
 def cp_triangle_norm_sq(x: cp.Expression) -> cp.Expression:
@@ -19,28 +17,7 @@ def cp_triangle_norm_sq(x: cp.Expression) -> cp.Expression:
 
 
 class CBCBase:
-    def __init__(self, X_init: np.ndarray):
-        """
-        Args
-        - X_init: np.ndarray, initial guess for X
-        """
-        self.X_init = X_init
-
-    def add_obs(self, v: np.ndarray, u: np.ndarray) -> None:
-        """
-        Args
-        - v: np.array, v(t+1) = v(t) + X @ u(t) = X @ q^c(t+1) + vpar(t+1)
-        - u: np.array, u(t) = q^c(t+1) - q^c(t)
-        """
-        pass
-
-    def select(self) -> np.ndarray:
-        return self.X_init
-
-
-class CBCProjection(CBCBase):
-    """Finds the set of X that is consistent with the observed data. Assumes
-    that noise bound (eta) is known.
+    """Base class for Consistent Model Chasing.
 
     In our implementation, we use a different indexing system than the paper.
     For, t = 0, ..., T:
@@ -55,77 +32,128 @@ class CBCProjection(CBCBase):
     We assume that q^c(0) = 0, and that v(0) is given.
 
     Usage:
-    TODO
+        sel = CBCBase(n,T,X_init,v,...)  # initialize
+        for t in range(T-1):
+            Xhat = sel.select(t)
+            q_next = get_control_action(Xhat, ...)
+
+            sel.q[t+1] = q_next
+            sel.v[t+1] = X_true @ q_next + vpar_true[t+1]
+            sel.update(t+1)
     """
-    def __init__(self, eta: float, n: int, T: int, nsamples: int, alpha: float,
-                 v: np.ndarray,
+    def __init__(self, n: int, T: int, X_init: np.ndarray, v: np.ndarray,
                  gen_X_set: Callable[[cp.Variable], list[Constraint]],
-                 Vpar: tuple[np.ndarray, np.ndarray],
-                 X_init: np.ndarray | None = None,
                  X_true: np.ndarray | None = None):
         """
         Args
-        - eta: float, noise bound
         - n: int, # of buses
         - T: int, maximum # of time steps
-        - nsamples: int, # of observations to use for defining the convex set
-        - alpha: float, weight on slack variable
+        - X_init: np.array, initial guess for X matrix, must be PSD and
+            entry-wise >= 0
         - v: np.array, shape [n], initial squared voltage magnitudes
         - gen_X_set: function, takes an optimization variable (cp.Variable) and returns
             a list of constraints (cp.Constraint) describing the convex, compact
             uncertainty set for X
-        - Vpar: tuple (Vpar_min, Vpar_max), box description of Vpar
-            - each Vpar_* is a np.array of shape [n]
-        - X_init: np.array, initial guess for X matrix, must be PSD and entry-wise >= 0
-            - if None, we use X_init = np.eye(n)
         - X_true: np.array, true X matrix, optional
         """
-        self.eta = eta
         self.n = n
-        self.nsamples = nsamples
-        self.alpha = alpha
+        self.X_init = X_init
         self.X_true = X_true
 
         # history
-        self.v = np.zeros([T+1, n])  # v[t] = v(t)
+        self.v = np.zeros([T, n])  # v[t] = v(t)
         self.v[0] = v
-        self.delta_v = np.zeros([T, n])  # delta_v[t] = v(t+1) - v(t)
-        self.u = np.zeros([T, n])  # u[t] = u(t) = q^c(t+1) - q^c(t)
-        self.q = np.zeros([T+1, n])  # q[t] = q^c(t)
+        self.delta_v = np.zeros([T-1, n])  # delta_v[t] = v(t+1) - v(t)
+        self.u = np.zeros([T-1, n])  # u[t] = u(t) = q^c(t+1) - q^c(t)
+        self.q = np.zeros([T, n])  # q[t] = q^c(t)
         self.t = 0
-
-        self.w_inds = np.zeros([2, T], dtype=bool)
-        self.vpar_inds = np.zeros([2, T+1], dtype=bool)
-        self.w_inds[:, 0] = True
-        self.vpar_inds[:, 1] = True
 
         # define optimization variables
         self.var_X = cp.Variable([n, n], PSD=True)
-        self.var_slack_w = cp.Variable(nonneg=True)  # nonneg=True
+        assert X_init.shape == (n, n)
+        self.var_X.value = X_init  # this automatically checks if X_init is PSD
 
         self.X_set = gen_X_set(self.var_X)
-        self.Vpar_min, self.Vpar_max = Vpar
-
-        if X_init is None:
-            X_init = np.eye(n)  # models a 1-layer tree graph  # TODO: check this!
-        assert X_init.shape == (n, n)
-        self.var_X.value = X_init  # this assignment will automatically check if X_init is PSD
-
-        # project X_init into caligraphic X if necessary
-        total_violation = sum(np.sum(constraint.violation()) for constraint in self.X_set)
-        tqdm.write(f'X_init invalid. Violation: {total_violation:.3f}. Projecting into X_set.')
-        obj = cp.Minimize(cp.norm(X_init - self.var_X))
-        prob = cp.Problem(objective=obj, constraints=self.X_set)
-        # prob.solve(eps=0.05, max_iters=300)
-        prob.solve(solver=cp.MOSEK)
-        make_pd_and_pos(self.var_X.value)
-        total_violation = sum(np.sum(constraint.violation()) for constraint in self.X_set)
-        tqdm.write(f'After projection: X_init violation: {total_violation:.3f}.')
-
+        self._project_into_X_set(X_init)
         self.X_init = self.var_X.value.copy()  # make a copy
         self.X_cache = self.var_X.value.copy()  # make a copy
+
+    def _project_into_X_set(self, X_init: np.ndarray) -> None:
+        # project X_init into 𝒳 if necessary
+        total_violation = sum(np.sum(constraint.violation()) for constraint in self.X_set)
+        if total_violation == 0:
+            tqdm.write(f'X_init valid.')
+        else:
+            tqdm.write(f'X_init invalid. Violation: {total_violation:.3f}. Projecting into 𝒳.')
+            obj = cp.Minimize(cp_triangle_norm_sq(X_init - self.var_X))
+            prob = cp.Problem(objective=obj, constraints=self.X_set)
+            # prob.solve(eps=0.05, max_iters=300)
+            prob.solve(solver=cp.MOSEK)
+            make_pd_and_pos(self.var_X.value)
+            total_violation = sum(np.sum(constraint.violation()) for constraint in self.X_set)
+            tqdm.write(f'After projection: X_init violation: {total_violation:.3f}.')
+
+    def add_obs(self, t: int) -> None:
+        """Process new observation.
+
+        Args
+        - t: int, current time step, v[t] and q[t] have just been updated
+        """
+        assert t >= 1
+        self.u[t-1] = self.q[t] - self.q[t-1]
+        self.delta_v[t-1] = self.v[t] - self.v[t-1]
+
+    def select(self, t: int) -> np.ndarray:
+        """
+        Args
+        - t: int, current time step
+
+        When select() is called, we have seen self.t observations. That is, we have values for:
+          v(0), ...,   v(t)    # recall:   v(t) = vs[t]
+        q^c(0), ..., q^c(t)    # recall: q^c(t) = qs[t]
+          u(0), ...,   u(t-1)  # recall:   u(t) = us[t]
+         Δv(0), ...,  Δv(t-1)  # recall:  Δv(t) = delta_vs[t]
+        """
+        return self.X_init
+
+
+class CBCProjection(CBCBase):
+    """Finds the set of X that is consistent with the observed data. Assumes
+    that noise bound (eta) is known.
+    """
+    def __init__(self, n: int, T: int, X_init: np.ndarray, v: np.ndarray,
+                 gen_X_set: Callable[[cp.Variable], list[Constraint]],
+                 eta: float, nsamples: int, alpha: float,
+                 Vpar: tuple[np.ndarray, np.ndarray],
+                 X_true: np.ndarray | None = None, seed: int = 123):
+        """
+        Args
+        - see CBCBase for descriptions of other parameters
+        - eta: float, noise bound
+        - nsamples: int, # of observations to use for defining the convex set
+        - alpha: float, weight on slack variable
+        - Vpar: tuple (Vpar_min, Vpar_max), box description of Vpar
+            - each Vpar_* is a np.array of shape [n]
+        - seed: int, random seed
+        """
+        super().__init__(n=n, T=T, X_init=X_init, v=v, gen_X_set=gen_X_set,
+                         X_true=X_true)
         self.is_cached = True
+
+        self.eta = eta
+        self.nsamples = nsamples
+        self.alpha = alpha
+
+        self.w_inds = np.zeros([2, T-1], dtype=bool)  # whether each (u(t), delta_v(t)) is useful
+        self.vpar_inds = np.zeros([2, T], dtype=bool)  # whether each (v(t), q(t)) is useful
+        self.w_inds[:, 0] = True
+        self.vpar_inds[:, 1] = True
+
+        self.var_slack_w = cp.Variable(nonneg=True)  # nonneg=True
+        self.Vpar_min, self.Vpar_max = Vpar
+
         self._setup_prob()
+        self.rng = np.random.default_rng(seed)
 
     def _setup_prob(self):
         n = self.n
@@ -183,7 +211,8 @@ class CBCProjection(CBCBase):
 
     def _check_informative(self, t: int, b: np.ndarray, c: np.ndarray,
                            useful: np.ndarray) -> None:
-        """
+        """Checks whether b[t], c[t] are useful.
+
         Args
         - t: int
         - b, c: np.ndarray, shape [T, n]
@@ -208,55 +237,52 @@ class CBCProjection(CBCBase):
         useful_ub[useful_ub] = np.any(cmp_b, axis=1) | np.any(cmp_c, axis=1)
         useful_ub[t] = ~np.any(np.all(cmp_b, axis=1) & np.all(cmp_c, axis=1))
 
-
-    def add_obs(self, v: np.ndarray, u: np.ndarray) -> None:
+    def add_obs(self, t: int) -> None:
         """
+        Args
+        - t: int, current time step (>=1), v[t] and q[t] have just been updated
+
         Args
         - v: np.array, v(t+1) = v(t) + X @ u(t) = X @ q^c(t+1) + vpar(t+1)
         - u: np.array, u(t) = q^c(t+1) - q^c(t)
         """
-        assert v.shape == (self.n,)
-        assert u.shape == (self.n,)
-        t = self.t
-        q = self.q[t] + u
-        delta_v = v - self.v[t]
-        self.u[t] = u
-        self.delta_v[t] = delta_v
-        self.v[t+1] = v
-        self.q[t+1] = q
+        # update self.u and self.delta_v
+        super().add_obs(t)
 
-        if t >= 1:
-            self._check_informative(t=t, b=self.delta_v, c=self.u, useful=self.w_inds)
-            self._check_informative(t=t+1, b=self.v, c=self.q, useful=self.vpar_inds)
+        if self.is_cached:
+            satisfied, msg = self._check_newest_obs(t)
+            if not satisfied:
+                self.is_cached = False
+                tqdm.write(f't = {self.t:6d}, CBC pre opt: {msg}')
 
-            # cmp_delta = (delta_v <= self.delta_v[self.w_inds_ub])
-            # cmp_u = (u >= self.us[self.w_inds_ub])
-            # self.w_inds_ub[self.w_inds_ub] = np.any(cmp_delta, axis=1) | np.any(cmp_u, axis=1)
-            # self.w_inds_ub[t] = ~np.any(np.all(cmp_delta, axis=1) & np.all(cmp_u, axis=1))
+        if t >= 2:
+            self._check_informative(t=t-1, b=self.delta_v, c=self.u, useful=self.w_inds)
+            self._check_informative(t=t, b=self.v, c=self.q, useful=self.vpar_inds)
 
-            # cmp_v = (v <= self.v[self.vpar_inds_ub])
-            # cmp_q = (q >= self.q[self.vpar_inds_ub])
-            # self.vpar_inds_ub[self.self.vpar_inds_ub] = np.any(cmp_v, axis=1) | np.any(cmp_u, axis=1)
-            # self.vpar_inds_ub[t] = ~np.any(np.all(cmp_delta, axis=1) & np.all(cmp_u, axis=1))
+        # cmp_delta = (delta_v <= self.delta_v[self.w_inds_ub])
+        # cmp_u = (u >= self.us[self.w_inds_ub])
+        # self.w_inds_ub[self.w_inds_ub] = np.any(cmp_delta, axis=1) | np.any(cmp_u, axis=1)
+        # self.w_inds_ub[t] = ~np.any(np.all(cmp_delta, axis=1) & np.all(cmp_u, axis=1))
 
-            if (t+1) % 500 == 0:
-                num_w_inds = tuple(np.sum(self.w_inds[:t+1], axis=1))
-                num_vpar_inds = tuple(np.sum(self.vpar_inds[:t+2], axis=1))
-                tqdm.write(f'active constraints - w: {num_w_inds}/{t+1}, vpar: {num_vpar_inds}/{t+1}')
+        # cmp_v = (v <= self.v[self.vpar_inds_ub])
+        # cmp_q = (q >= self.q[self.vpar_inds_ub])
+        # self.vpar_inds_ub[self.self.vpar_inds_ub] = np.any(cmp_v, axis=1) | np.any(cmp_u, axis=1)
+        # self.vpar_inds_ub[t] = ~np.any(np.all(cmp_delta, axis=1) & np.all(cmp_u, axis=1))
 
-        self.t += 1
-        self.is_cached = False
+        if t % 500 == 0:
+            num_w_inds = tuple(np.sum(self.w_inds[:t], axis=1))
+            num_vpar_inds = tuple(np.sum(self.vpar_inds[:t+1], axis=1))
+            tqdm.write(f'active constraints - w: {num_w_inds}/{t}, vpar: {num_vpar_inds}/{t}')
 
-    def _check_newest_obs(self) -> tuple[bool, str]:
-        """Checks whether self.X_cache satisfies the newest observation.
+    def _check_newest_obs(self, t: int) -> tuple[bool, str]:
+        """Checks whether self.X_cache satisfies the newest observation:
+        (v[t], q[t], u[t-1], delta_v[t-1])
 
-        Returns:
+        Returns
         - satisfied: bool, whether self.X_cache satisfies the newest observation
         - msg: str, (if not satisfied) describes which constraints are not satisfied,
             (if satisfied) is empty string ''
         """
-        t = self.t
-
         w_hat = self.delta_v[t-1] - self.u[t-1] @ self.X_cache
         vpar_hat = self.v[t] - self.q[t] @ self.X_cache
         w_hat_norm = np.max(np.abs(w_hat))
@@ -275,27 +301,25 @@ class CBCProjection(CBCBase):
         msg = ', '.join(msgs)
         return satisfied, msg
 
-    def select(self) -> np.ndarray:
+    def select(self, t: int) -> np.ndarray:
         """
-        When select() is called, we have seen self.t observations. That is, we have values for:
+        We have seen t observations. That is, we have values for:
           v(0), ...,   v(t)    # recall:   v(t) = vs[t]
         q^c(0), ..., q^c(t)    # recall: q^c(t) = qs[t]
           u(0), ...,   u(t-1)  # recall:   u(t) = us[t]
          Δv(0), ...,  Δv(t-1)  # recall:  Δv(t) = delta_vs[t]
+
+        It is possible that t=0, meaning we haven't seen any observations yet.
+        (We have v(0) and q^c(0), but not u(0) or Δv(0).) In this case, our
+        X_init should be cached, and we will return that.
+
+        Args
+        - t: int, current time step (>=0)
         """
+        # be lazy if self.X_cache already satisfies the newest obs.
         if self.is_cached:
             return self.X_cache
 
-        t = self.t
-        assert t >= 1
-
-        # be lazy if self.X_cache already satisfies the newest obs.
-        satisfied, msg = self._check_newest_obs()
-        if satisfied:
-            # tqdm.write(f't = {self.t:6d}. CBC being lazy.')
-            self.is_cached = True
-            return self.X_cache
-        tqdm.write(f't = {self.t:6d}, CBC pre opt: {msg}')
         indent = ' ' * 11
 
         n = self.n
@@ -330,7 +354,7 @@ class CBCProjection(CBCBase):
                 w_inds = self.w_inds[i].nonzero()[0]
                 ts = np.concatenate([
                     w_inds[-k:],
-                    rng.choice(len(w_inds) - k, size=self.nsamples-k, replace=False)
+                    self.rng.choice(len(w_inds) - k, size=self.nsamples-k, replace=False)
                 ])
                 self.param[f'delta_vs_{b}'].value = self.delta_v[ts]
                 self.param[f'us_{b}'].value = self.u[ts]
@@ -338,7 +362,7 @@ class CBCProjection(CBCBase):
                 vpar_inds = self.vpar_inds[i].nonzero()[0]
                 ts = np.concatenate([
                     vpar_inds[-k:],
-                    rng.choice(len(vpar_inds) - k, size=self.nsamples-k, replace=False)
+                    self.rng.choice(len(vpar_inds) - k, size=self.nsamples-k, replace=False)
                 ])
                 self.param[f'vs_{b}'].value = self.v[ts]
                 self.param[f'qs_{b}'].value = self.q[ts]
@@ -375,15 +399,11 @@ class CBCProjection(CBCBase):
             tqdm.write(f'{indent} CBC slack: {slack_w.value:.3f}')
 
         # check whether constraints are satisfied for latest time step
-        satisfied, msg = self._check_newest_obs()
+        satisfied, msg = self._check_newest_obs(t)
         if not satisfied:
             tqdm.write(f'{indent} CBC post opt: {msg}')
 
         return np.array(self.X_cache)  # return a copy
-
-        # TODO: calculate Steiner point?
-        # if self.t > n + 1:
-        #     steiner_point = psd_steiner_point(2, X, constraints)
 
 
 # class CBCProjectionWithNoise(CBCProjection):
@@ -539,7 +559,8 @@ class CBCProjection(CBCBase):
 #         #     steiner_point = psd_steiner_point(2, X, constraints)
 
 
-def psd_steiner_point(num_samples, X, constraints) -> np.ndarray:
+def psd_steiner_point(num_samples: int, X: cp.Variable,
+                      constraints: list[Constraint]) -> np.ndarray:
     """
     Args
     - num_samples: int, number of samples to use for calculating Steiner point

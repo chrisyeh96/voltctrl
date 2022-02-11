@@ -69,7 +69,7 @@ def meta_gen_X_set(norm_bound: float, X_true: np.ndarray
 def run(epsilon: float, q_max: float, cbc_alg: str,
         eta: float, norm_bound: float,
         noise: float = 0, nsamples: int = 100, seed: int = 123,
-        is_interactive: bool = False):
+        is_interactive: bool = False) -> None:
     """
     Args
     - eta: float, maximum ||w||∞
@@ -126,36 +126,32 @@ def run(epsilon: float, q_max: float, cbc_alg: str,
         'X_init': X_init
     }
 
+    gen_X_set = meta_gen_X_set(norm_bound=norm_bound, X_true=X)
+
     if cbc_alg == 'const':
-        sel = CBCBase(X_init)
+        sel = CBCBase(n=n, T=T, X_init=X_init, v=vpars[:, start],
+                      gen_X_set=gen_X_set, X_true=X)
     elif cbc_alg == 'proj':
         params['nsamples'] = nsamples
-        gen_X_set = meta_gen_X_set(norm_bound=norm_bound, X_true=X)
         sel = CBCProjection(
             eta=eta, n=n, T=T-start, nsamples=nsamples, alpha=alpha,
             v=vpars[:, start], gen_X_set=gen_X_set, Vpar=(Vpar_min, Vpar_max),
             X_init=X_init, X_true=X)
+        save_dict.update({
+            'w_inds': sel.w_inds,
+            'vpar_inds': sel.vpar_inds
+        })
     else:
         raise ValueError('unknown cbc_alg')
 
     volt_plot = VoltPlot(v_lims=(np.sqrt(v_min), np.sqrt(v_max)), q_lims=(-q_max, q_max))
 
     vs, qcs, dists = robust_voltage_control(
-        p=p[:, start:T], qe=qe[:, start:T],
+        p=p[:, start:T].T, qe=qe[:, start:T].T,
         v_lims=(v_min, v_max), q_lims=(-q_max, q_max), v_nom=v_nom,
         X=X, R=R, Pv=Pv, Pu=Pu, eta=eta, eps=epsilon, v_sub=v_sub, beta=beta,
         sel=sel,
         volt_plot=volt_plot if is_interactive else None)
-
-    if isinstance(sel, CBCProjection):
-        save_dict.update({
-            'w_inds': sel.w_inds,
-            'vpar_inds': sel.vpar_inds
-        })
-
-    # TODO: check whether this is actually necessary
-    dists['t'].append(T-1)
-    dists['true'].append(dists['true'][-1])
 
     volt_plot.update(qcs=qcs,
                      vs=np.sqrt(vs),
