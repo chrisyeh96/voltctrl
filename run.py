@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import pickle
-import time
+import datetime as dt
 from typing import Any
 
 import cvxpy as cp
@@ -79,48 +79,45 @@ def run(epsilon: float, q_max: float, cbc_alg: str,
     - noise: float, network impedances modified by fraction Uniform(±noise)
     - seed: int, random seed
     """
-    params: dict[str, Any] = {
-        'qmax': q_max,
-        'eta': eta,
-        'eps': epsilon,
-        'norm': norm_bound,
-        'CBC': cbc_alg,
-        'seed': seed
-    }
+    start_time = dt.datetime.now()
+    params: dict[str, Any] = dict(
+        cbc_alg=cbc_alg, q_max=q_max, epsilon=epsilon, eta=eta)
+    filename = f'CBC{cbc_alg}'
 
     # read in data
     if noise > 0:
-        params['noise'] = noise
+        params.update(noise=noise, seed=seed, norm_bound=norm_bound)
+        filename += f'_noise{noise}_norm{norm_bound}_seed{seed}'
+
     net = create_56bus()
-    R, X = create_RX_from_net(net, noise=noise, seed=seed)
+    R, X = create_RX_from_net(net, noise=0)  # true R and X
     p, qe = read_load_data()  # in MW and MVar
-    n, T = p.shape
+    T, n = p.shape
 
     ### FIXED PARAMETERS
     v_min, v_max = (11.4**2, 12.6**2)  # +/-5%, units kV^2
     v_nom = 12**2  # nominal squared voltage magnitude, units kV^2
     v_sub = v_nom  # fixed squared voltage magnitude at substation, units kV^2
 
-    vpars = X @ qe + R @ p + v_sub  # shape [n, T]
+    vpars = qe @ X + p @ R + v_sub  # shape [T, n]
     Vpar_min = np.min(vpars, axis=1)  # shape [n]
     Vpar_max = np.max(vpars, axis=1)  # shape [n]
 
-    Pv = 0.1 * np.eye(n)
-    Pu = 10 * np.eye(n)
+    Pv = 0.1
+    Pu = 10
 
     # weights on slack variables: alpha for CBC, beta for robust oracle
     alpha = 1000
-    beta = 10
+    beta = 100
+
+    params.update(
+        v_min=v_min, v_max=v_max, v_nom=v_nom, Pv=Pv, Pu=Pu, beta=beta)
     ### end of FIXED PARAMETERS
 
     start = 0
 
-    # randomly initialize a PSD and entry-wise positive matrix
-    # with the same norm as the true X
-    rng = np.random.default_rng(seed=seed)
-    X_init = rng.normal(size=(n, n))
-    make_pd_and_pos(X_init)
-    X_init *= np_triangle_norm(X) / np_triangle_norm(X_init)
+    # randomly initialize a network matrix
+    _, X_init = create_RX_from_net(net, noise=noise, check_pd=True, seed=seed)
 
     save_dict = {
         'X_init': X_init
@@ -129,50 +126,54 @@ def run(epsilon: float, q_max: float, cbc_alg: str,
     gen_X_set = meta_gen_X_set(norm_bound=norm_bound, X_true=X)
 
     if cbc_alg == 'const':
-        sel = CBCBase(n=n, T=T, X_init=X_init, v=vpars[:, start],
+        sel = CBCBase(n=n, T=T, X_init=X_init, v=vpars[start],
                       gen_X_set=gen_X_set, X_true=X)
     elif cbc_alg == 'proj':
-        params['nsamples'] = nsamples
+        params.update(alpha=alpha, nsamples=nsamples)
         sel = CBCProjection(
             eta=eta, n=n, T=T-start, nsamples=nsamples, alpha=alpha,
-            v=vpars[:, start], gen_X_set=gen_X_set, Vpar=(Vpar_min, Vpar_max),
-            X_init=X_init, X_true=X)
-        save_dict.update({
-            'w_inds': sel.w_inds,
-            'vpar_inds': sel.vpar_inds
-        })
+            v=vpars[start], gen_X_set=gen_X_set, Vpar=(Vpar_min, Vpar_max),
+            X_init=X_init, X_true=X, seed=seed)
+        save_dict.update(w_inds=sel.w_inds, vpar_inds=sel.vpar_inds)
     else:
         raise ValueError('unknown cbc_alg')
 
-    volt_plot = VoltPlot(v_lims=(np.sqrt(v_min), np.sqrt(v_max)), q_lims=(-q_max, q_max))
+    volt_plot = VoltPlot(
+        v_lims=(np.sqrt(v_min), np.sqrt(v_max)),
+        q_lims=(-q_max, q_max))
 
     vs, qcs, dists = robust_voltage_control(
-        p=p[:, start:T].T, qe=qe[:, start:T].T,
+        p=p[start:T], qe=qe[start:T],
         v_lims=(v_min, v_max), q_lims=(-q_max, q_max), v_nom=v_nom,
-        X=X, R=R, Pv=Pv, Pu=Pu, eta=eta, eps=epsilon, v_sub=v_sub, beta=beta,
-        sel=sel,
+        X=X, R=R,
+        Pv=Pv * np.eye(n), Pu=Pu * np.eye(n),
+        eta=eta, eps=epsilon, v_sub=v_sub, beta=beta, sel=sel,
         volt_plot=volt_plot if is_interactive else None)
 
+    elapsed = (dt.datetime.now() - start_time).total_seconds()
+
+    # save data
+    now = dt.datetime.now(dt.timezone(dt.timedelta(hours=-8)))  # PST
+    filename += now.strftime('_%Y%m%d_%H%M%S')
+    with open(f'{filename}.pkl', 'wb') as f:
+        pickle.dump(file=f, obj=dict(
+            vs=vs, qcs=qcs, dists=dists, params=params,
+            elapsed=elapsed, **save_dict))
+    # np.savez_compressed(f'{filename}.npz', vs=vs, qcs=qcs, dists=dists, **save_dict)
+
+    # plot and save figure
     volt_plot.update(qcs=qcs,
                      vs=np.sqrt(vs),
                      vpars=np.sqrt(vpars),
                      dists=(dists['t'], dists['true']))
-
-    # save figure
-    filename = '_'.join(f'{k}{v}' for k,v in params.items())
     volt_plot.fig.savefig(f'{filename}.svg', pad_inches=0, bbox_inches='tight')
     volt_plot.fig.savefig(f'{filename}.pdf', pad_inches=0, bbox_inches='tight')
-
-    # save data
-    np.savez_compressed(
-        f'{filename}.npz',
-        vs=vs, qcs=qcs, dists=dists, **save_dict)
 
 
 if __name__ == '__main__':
     run(
         epsilon=0.1,
-        q_max=0.2,
+        q_max=0.24,
         cbc_alg='const',
         eta=8.65,
         norm_bound=0.2,

@@ -156,8 +156,8 @@ def create_RX_from_rx(r: np.ndarray, x: np.ndarray, G: nx.Graph,
     for i in range(1, n+1):
         for j in range(i, n+1):
             intersect = get_intersecting_path(paths[i], paths[j])
-            R[i, j] = np.sum(r[e] for e in intersect)
-            X[i, j] = np.sum(x[e] for e in intersect)
+            R[i, j] = sum(r[e] for e in intersect)
+            X[i, j] = sum(x[e] for e in intersect)
             R[j, i] = R[i, j]
             X[j, i] = X[i, j]
 

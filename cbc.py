@@ -575,6 +575,8 @@ def psd_steiner_point(num_samples: int, X: cp.Variable,
     prob = cp.Problem(objective=objective, constraints=constraints)
     assert prob.is_dcp(dpp=True)
 
+    rng = np.random.default_rng()
+
     for i in range(num_samples):
         theta = rng.random(X.shape)
         theta = theta @ theta.T + 1e-7 * np.eye(n)  # random strictly PD matrix
