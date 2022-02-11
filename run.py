@@ -67,8 +67,10 @@ def meta_gen_X_set(norm_bound: float, X_true: np.ndarray
 
 def run(epsilon: float, q_max: float, cbc_alg: str,
         eta: float, norm_bound: float,
-        noise: float = 0, nsamples: int = 100, seed: int = 123,
-        is_interactive: bool = False) -> None:
+        noise: float = 0, perm: bool = False,
+        nsamples: int = 100, seed: int = 123,
+        is_interactive: bool = False, savedir: str = '',
+        pbar: tqdm | None = None) -> str:
     """
     Args
     - eta: float, maximum ||w||∞
@@ -76,17 +78,32 @@ def run(epsilon: float, q_max: float, cbc_alg: str,
     - q_max: float, maximum reactive power injection
     - norm_bound: float
     - noise: float, network impedances modified by fraction Uniform(±noise)
+    - perm: bool, whether to randomly permute network impedances
     - seed: int, random seed
+    - savedir: str, path to folder for saving outputs ('' for current dir)
+    - pbar_pos: int, optional position for tqdm progress bar
+
+    Returns: str, filename (without extension)
     """
-    start_time = dt.datetime.now()
+    if savedir != '':
+        os.makedirs(savedir, exist_ok=True)
+    tz = dt.timezone(dt.timedelta(hours=-8))  # PST
+    start_time = dt.datetime.now(tz)
+
     params: dict[str, Any] = dict(
         cbc_alg=cbc_alg, q_max=q_max, epsilon=epsilon, eta=eta)
-    filename = f'CBC{cbc_alg}'
+    filename = os.path.join(savedir, f'CBC{cbc_alg}')
 
     # read in data
-    if noise > 0:
-        params.update(noise=noise, seed=seed, norm_bound=norm_bound)
-        filename += f'_noise{noise}_norm{norm_bound}_seed{seed}'
+    if noise > 0 or perm:
+        params.update(seed=seed, norm_bound=norm_bound)
+        if noise > 0:
+            params.update(noise=noise)
+            filename += f'_noise{noise}'
+        if perm:
+            params.update(perm=perm)
+            filename += '_perm'
+        filename += f'_norm{norm_bound}_seed{seed}'
 
     net = create_56bus()
     R, X = create_RX_from_net(net, noise=0)  # true R and X
@@ -99,8 +116,8 @@ def run(epsilon: float, q_max: float, cbc_alg: str,
     v_sub = v_nom  # fixed squared voltage magnitude at substation, units kV^2
 
     vpars = qe @ X + p @ R + v_sub  # shape [T, n]
-    Vpar_min = np.min(vpars, axis=1)  # shape [n]
-    Vpar_max = np.max(vpars, axis=1)  # shape [n]
+    Vpar_min = np.min(vpars, axis=0)  # shape [n]
+    Vpar_max = np.max(vpars, axis=0)  # shape [n]
 
     Pv = 0.1
     Pu = 10
@@ -113,11 +130,18 @@ def run(epsilon: float, q_max: float, cbc_alg: str,
         v_min=v_min, v_max=v_max, v_nom=v_nom, Pv=Pv, Pu=Pu, beta=beta)
     ### end of FIXED PARAMETERS
 
+    filename += start_time.strftime('_%Y%m%d_%H%M%S')
+    if is_interactive:
+        log = tqdm
+    else:
+        log = wrap_write_newlines(open(f'{filename}.log', 'w'))
+
     start = 0
 
     # randomly initialize a network matrix
-    _, X_init = create_RX_from_net(net, noise=noise, check_pd=True, seed=seed)
-
+    # import pdb
+    # pdb.set_trace()
+    _, X_init = create_RX_from_net(net, noise=noise, perm=perm, check_pd=True, seed=seed)
     save_dict = {
         'X_init': X_init
     }
@@ -126,13 +150,13 @@ def run(epsilon: float, q_max: float, cbc_alg: str,
 
     if cbc_alg == 'const':
         sel = CBCBase(n=n, T=T, X_init=X_init, v=vpars[start],
-                      gen_X_set=gen_X_set, X_true=X)
+                      gen_X_set=gen_X_set, X_true=X, log=log)
     elif cbc_alg == 'proj':
         params.update(alpha=alpha, nsamples=nsamples)
         sel = CBCProjection(
             eta=eta, n=n, T=T-start, nsamples=nsamples, alpha=alpha,
             v=vpars[start], gen_X_set=gen_X_set, Vpar=(Vpar_min, Vpar_max),
-            X_init=X_init, X_true=X, seed=seed)
+            X_init=X_init, X_true=X, log=log, seed=seed)
         save_dict.update(w_inds=sel.w_inds, vpar_inds=sel.vpar_inds)
     else:
         raise ValueError('unknown cbc_alg')
@@ -144,16 +168,14 @@ def run(epsilon: float, q_max: float, cbc_alg: str,
     vs, qcs, dists = robust_voltage_control(
         p=p[start:T], qe=qe[start:T],
         v_lims=(v_min, v_max), q_lims=(-q_max, q_max), v_nom=v_nom,
-        X=X, R=R,
-        Pv=Pv * np.eye(n), Pu=Pu * np.eye(n),
+        X=X, R=R, Pv=Pv * np.eye(n), Pu=Pu * np.eye(n),
         eta=eta, eps=epsilon, v_sub=v_sub, beta=beta, sel=sel,
+        pbar=pbar, log=log,
         volt_plot=volt_plot if is_interactive else None)
 
-    elapsed = (dt.datetime.now() - start_time).total_seconds()
+    elapsed = (dt.datetime.now(tz) - start_time).total_seconds()
 
     # save data
-    now = dt.datetime.now(dt.timezone(dt.timedelta(hours=-8)))  # PST
-    filename += now.strftime('_%Y%m%d_%H%M%S')
     with open(f'{filename}.pkl', 'wb') as f:
         pickle.dump(file=f, obj=dict(
             vs=vs, qcs=qcs, dists=dists, params=params,
@@ -168,14 +190,29 @@ def run(epsilon: float, q_max: float, cbc_alg: str,
     volt_plot.fig.savefig(f'{filename}.svg', pad_inches=0, bbox_inches='tight')
     volt_plot.fig.savefig(f'{filename}.pdf', pad_inches=0, bbox_inches='tight')
 
+    if not is_interactive:
+        log.close()
+    return filename
+
+
+def wrap_write_newlines(f: Any) -> Any:
+    old_write = f.write
+    def new_write(s):
+        old_write(s + '\n')
+        f.flush()
+    f.write = new_write
+    return f
+
 
 if __name__ == '__main__':
     run(
         epsilon=0.1,
         q_max=0.24,
-        cbc_alg='const',
+        cbc_alg='proj',
         eta=8.65,
         norm_bound=0.2,
-        noise=0,
-        seed=123,
+        noise=0.4,
+        perm=True,
+        seed=14,
+        pbar=tqdm(),
         is_interactive=False)

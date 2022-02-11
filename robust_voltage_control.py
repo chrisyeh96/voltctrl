@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 from typing import Any
 
 import cvxpy as cp
@@ -15,7 +16,9 @@ def robust_voltage_control(
         X: np.ndarray, R: np.ndarray,
         Pv: np.ndarray, Pu: np.ndarray,
         eta: float | None, eps: float, v_sub: float, beta: float,
-        sel: Any, volt_plot: VoltPlot | None = None, volt_plot_update: int = 100,
+        sel: Any, pbar: tqdm | None = None,
+        log: tqdm | io.TextIOBase | None = None,
+        volt_plot: VoltPlot | None = None, volt_plot_update: int = 100,
         ) -> tuple[np.ndarray, np.ndarray, dict[str, list]]:
     """Runs robust voltage control.
 
@@ -37,6 +40,7 @@ def robust_voltage_control(
     - eps: float, robustness buffer (kV^2)
     - v_sub: float, fixed squared voltage magnitude at substation (kV^2)
     - sel: nested convex body chasing object (e.g., CBCProjection)
+    - pbar: optional tqdm, progress bar
     - volt_plot: VoltPlot
     - volt_plot_update: int, time steps between updating volt_plot
 
@@ -53,7 +57,10 @@ def robust_voltage_control(
     assert p.shape == qe.shape
     T, n = qe.shape
 
-    print(f'||X||_△ = {np_triangle_norm(X):.2f}', flush=True)
+    if log is None:
+        log = tqdm()
+
+    log.write(f'||X||_△ = {np_triangle_norm(X):.2f}')
 
     dists: dict[str, list] = {'t': [], 'true': [], 'prev': []}
     X̂_prev = None
@@ -69,7 +76,7 @@ def robust_voltage_control(
     else:
         is_learning_eta = False
         rho = eps / (2 * np.linalg.norm(np.ones(n) * (q_max-q_min), ord=2))
-    print(f'rho(eps={eps:.2f}) = {rho:.3f}')
+    log.write(f'rho(eps={eps:.2f}) = {rho:.3f}')
 
     vs = sel.v  # shape [T, n], vs[t] denotes v(t)
     qcs = sel.q  # shape [T, n], qcs[t] denotes q^c(t)
@@ -103,9 +110,14 @@ def robust_voltage_control(
 
     # if cp.Problem is DPP, then it can be compiled for speedup
     # - http://cvxpy.org/tutorial/advanced/index.html#disciplined-parametrized-programming
-    tqdm.write(f'Robust Oracle prob is DPP?: {prob.is_dcp(dpp=True)}')
+    assert prob.is_dcp(dpp=True)
+    # log.write(f'Robust Oracle prob is DPP?: {prob.is_dcp(dpp=True)}')
 
-    for t in tqdm(range(T-1)):  # t = 0, ..., T-2
+    if pbar is not None:
+        log.write('pbar present')
+        pbar.reset(total=T-1)
+
+    for t in range(T-1):  # t = 0, ..., T-2
         # fill in Parameters
         if is_learning_eta:
             raise NotImplementedError
@@ -115,18 +127,18 @@ def robust_voltage_control(
             # etahat_prev = float(eta.value)  # save a copy
         else:
             X̂.value = sel.select(t)
-            update_dists(dists, t, X̂.value, X̂_prev, X)
+            update_dists(dists, t, X̂.value, X̂_prev, X, log=log)
             X̂_prev = np.array(X̂.value)  # save a copy
         qct.value = qcs[t]
         vt.value = vs[t]
 
         try:
-            prob.solve(warm_start=True)
+            prob.solve(warm_start=True, solver=cp.MOSEK, mosek_params={'MSK_IPAR_NUM_THREADS': 1})
         except cp.SolverError:
-            tqdm.write('robust oracle: default solver failed. Trying cp.ECOS')
+            log.write(f't={t}. robust oracle: default solver failed. Trying cp.ECOS')
             prob.solve(solver=cp.ECOS)
         if prob.status != 'optimal':
-            tqdm.write(f'robust oracle: prob.status = {prob.status}')
+            log.write(f't={t}. robust oracle: prob.status = {prob.status}')
             if 'infeasible' in prob.status:
                 import pdb
                 pdb.set_trace()
@@ -134,7 +146,7 @@ def robust_voltage_control(
         qcs[t+1] = qc_next.value
         vs[t+1] = vpars[t+1] + qc_next.value @ X
         sel.add_obs(t+1)
-        # tqdm.write(f't = {t}, ||u||_1 = {np.linalg.norm(u.value, 1)}')
+        # log.write(f't = {t}, ||u||_1 = {np.linalg.norm(u.value, 1)}')
 
         if volt_plot is not None and (t+1) % volt_plot_update == 0:
             volt_plot.update(qcs=qcs[:t+2],
@@ -142,6 +154,11 @@ def robust_voltage_control(
                              vpars=np.sqrt(vpars[:t+2]),
                              dists=(dists['t'], dists['true']))
             volt_plot.show(clear_display=False)
+
+        if pbar is not None:
+            pbar.update()
+        if (t+1) % volt_plot_update == 0:
+            log.write(f't={t}. robust oracle progress.')
 
     # update voltplot at the end of run
     if volt_plot is not None:
@@ -159,6 +176,7 @@ def np_triangle_norm(x: np.ndarray) -> float:
 
 def update_dists(dists: dict[str, list], t: int, Xhat: np.ndarray,
                  Xhat_prev: np.ndarray | None, X: np.ndarray,
+                 log: tqdm | io.TextIOBase | None = None,
                  # etahat: float | None = None, etahat_prev: float | None = None
                  ) -> None:
     """Calculates ||X̂-X||_△ and ||X̂-X̂_prev||_△.
@@ -190,7 +208,10 @@ def update_dists(dists: dict[str, list], t: int, Xhat: np.ndarray,
             # if etahat_prev is not None:
             #     msg += (f', etahat = {etahat:5.3f}, '
             #             f'|etahat - etahat_prev| = {etahat - etahat_prev:5.3f}')
-        tqdm.write(msg)
+
+        if log is None:
+            log = tqdm
+        log.write(msg)
 
         dists['t'].append(t)
         dists['true'].append(dist_true)

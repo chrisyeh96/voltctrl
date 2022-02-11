@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import io
 
 import cvxpy as cp
 import numpy as np
@@ -43,7 +44,8 @@ class CBCBase:
     """
     def __init__(self, n: int, T: int, X_init: np.ndarray, v: np.ndarray,
                  gen_X_set: Callable[[cp.Variable], list[Constraint]],
-                 X_true: np.ndarray | None = None):
+                 X_true: np.ndarray | None = None,
+                 log: tqdm | io.TextIOBase | None = None):
         """
         Args
         - n: int, # of buses
@@ -55,10 +57,15 @@ class CBCBase:
             a list of constraints (cp.Constraint) describing the convex, compact
             uncertainty set for X
         - X_true: np.array, true X matrix, optional
+        - log: object with .write() function, defaults to tqdm
         """
         self.n = n
         self.X_init = X_init
         self.X_true = X_true
+
+        if log is None:
+            log = tqdm
+        self.log = log
 
         # history
         self.v = np.zeros([T, n])  # v[t] = v(t)
@@ -66,7 +73,6 @@ class CBCBase:
         self.delta_v = np.zeros([T-1, n])  # delta_v[t] = v(t+1) - v(t)
         self.u = np.zeros([T-1, n])  # u[t] = u(t) = q^c(t+1) - q^c(t)
         self.q = np.zeros([T, n])  # q[t] = q^c(t)
-        self.t = 0
 
         # define optimization variables
         self.var_X = cp.Variable([n, n], PSD=True)
@@ -82,16 +88,16 @@ class CBCBase:
         # project X_init into 𝒳 if necessary
         total_violation = sum(np.sum(constraint.violation()) for constraint in self.X_set)
         if total_violation == 0:
-            tqdm.write(f'X_init valid.')
+            self.log.write(f'X_init valid.')
         else:
-            tqdm.write(f'X_init invalid. Violation: {total_violation:.3f}. Projecting into 𝒳.')
+            self.log.write(f'X_init invalid. Violation: {total_violation:.3f}. Projecting into 𝒳.')
             obj = cp.Minimize(cp_triangle_norm_sq(X_init - self.var_X))
             prob = cp.Problem(objective=obj, constraints=self.X_set)
             # prob.solve(eps=0.05, max_iters=300)
             prob.solve(solver=cp.MOSEK)
             make_pd_and_pos(self.var_X.value)
             total_violation = sum(np.sum(constraint.violation()) for constraint in self.X_set)
-            tqdm.write(f'After projection: X_init violation: {total_violation:.3f}.')
+            self.log.write(f'After projection: X_init violation: {total_violation:.3f}.')
 
     def add_obs(self, t: int) -> None:
         """Process new observation.
@@ -108,7 +114,7 @@ class CBCBase:
         Args
         - t: int, current time step
 
-        When select() is called, we have seen self.t observations. That is, we have values for:
+        When select() is called, we have seen t observations. That is, we have values for:
           v(0), ...,   v(t)    # recall:   v(t) = vs[t]
         q^c(0), ..., q^c(t)    # recall: q^c(t) = qs[t]
           u(0), ...,   u(t-1)  # recall:   u(t) = us[t]
@@ -125,7 +131,8 @@ class CBCProjection(CBCBase):
                  gen_X_set: Callable[[cp.Variable], list[Constraint]],
                  eta: float, nsamples: int, alpha: float,
                  Vpar: tuple[np.ndarray, np.ndarray],
-                 X_true: np.ndarray | None = None, seed: int = 123):
+                 X_true: np.ndarray | None = None,
+                 log: tqdm | io.TextIOBase | None = None, seed: int = 123):
         """
         Args
         - see CBCBase for descriptions of other parameters
@@ -137,7 +144,7 @@ class CBCProjection(CBCBase):
         - seed: int, random seed
         """
         super().__init__(n=n, T=T, X_init=X_init, v=v, gen_X_set=gen_X_set,
-                         X_true=X_true)
+                         X_true=X_true, log=log)
         self.is_cached = True
 
         self.eta = eta
@@ -201,7 +208,7 @@ class CBCProjection(CBCBase):
 
         # if cp.Problem is DPP, then it can be compiled for speedup
         # - http://cvxpy.org/tutorial/advanced/index.html#disciplined-parametrized-programming  # noqa
-        tqdm.write(f'CBC prob is DPP?: {self.prob.is_dcp(dpp=True)}')
+        self.log.write(f'CBC prob is DPP?: {self.prob.is_dcp(dpp=True)}')
 
         # self.param_Xprev = Xprev
         # self.param_vs = vs
@@ -253,7 +260,7 @@ class CBCProjection(CBCBase):
             satisfied, msg = self._check_newest_obs(t)
             if not satisfied:
                 self.is_cached = False
-                tqdm.write(f't = {self.t:6d}, CBC pre opt: {msg}')
+                self.log.write(f't = {t:6d}, CBC pre opt: {msg}')
 
         if t >= 2:
             self._check_informative(t=t-1, b=self.delta_v, c=self.u, useful=self.w_inds)
@@ -272,7 +279,7 @@ class CBCProjection(CBCBase):
         if t % 500 == 0:
             num_w_inds = tuple(np.sum(self.w_inds[:t], axis=1))
             num_vpar_inds = tuple(np.sum(self.vpar_inds[:t+1], axis=1))
-            tqdm.write(f'active constraints - w: {num_w_inds}/{t}, vpar: {num_vpar_inds}/{t}')
+            self.log.write(f'active constraints - w: {num_w_inds}/{t}, vpar: {num_vpar_inds}/{t}')
 
     def _check_newest_obs(self, t: int) -> tuple[bool, str]:
         """Checks whether self.X_cache satisfies the newest observation:
@@ -386,7 +393,7 @@ class CBCProjection(CBCBase):
         )
 
         if prob.status != 'optimal':
-            tqdm.write(f'{indent} CBC prob.status = {prob.status}')
+            self.log.write(f'{indent} CBC prob.status = {prob.status}')
             if prob.status == 'infeasible':
                 import pdb
                 pdb.set_trace()
@@ -396,12 +403,12 @@ class CBCProjection(CBCBase):
 
         # check slack variable
         if slack_w.value > 0:
-            tqdm.write(f'{indent} CBC slack: {slack_w.value:.3f}')
+            self.log.write(f'{indent} CBC slack: {slack_w.value:.3f}')
 
         # check whether constraints are satisfied for latest time step
         satisfied, msg = self._check_newest_obs(t)
         if not satisfied:
-            tqdm.write(f'{indent} CBC post opt: {msg}')
+            self.log.write(f'{indent} CBC post opt: {msg}')
 
         return np.array(self.X_cache)  # return a copy
 

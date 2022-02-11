@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import TypeVar
+import warnings
 
 import networkx as nx
 import numpy as np
@@ -9,6 +10,7 @@ import pandapower as pp
 import pandapower.topology
 import scipy.io
 
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 T = TypeVar('T')
 
@@ -35,7 +37,7 @@ def create_56bus() -> pp.pandapowerNet:
     return net
 
 
-def create_RX_from_net(net: pp.pandapowerNet, noise: float = 0,
+def create_RX_from_net(net: pp.pandapowerNet, noise: float = 0, perm: bool = False,
                        seed: int | None = 123, check_pd: bool = True
                        ) -> tuple[np.ndarray, np.ndarray]:
     """Creates R,X matrices from a pandapowerNet.
@@ -56,18 +58,28 @@ def create_RX_from_net(net: pp.pandapowerNet, noise: float = 0,
     r = np.ones((n+1, n+1)) * np.inf
     x = np.ones((n+1, n+1)) * np.inf
 
-    r_ohm_per_km = net.line['r_ohm_per_km']
-    x_ohm_per_km = net.line['x_ohm_per_km']
+    r_ohm_per_km = net.line['r_ohm_per_km'].values
+    x_ohm_per_km = net.line['x_ohm_per_km'].values
+    from_bus = net.line['from_bus']
+    to_bus = net.line['to_bus']
+
+    rng = np.random.default_rng(seed)
 
     if noise > 0:
         # Do NOT update r/x_ohm_per_km in-place. We do not want to change
         # the underlying net object.
-        rng = np.random.default_rng(seed)
         noise_limit = r_ohm_per_km * noise
         r_ohm_per_km = r_ohm_per_km + rng.uniform(-noise_limit, noise_limit)
 
         noise_limit = x_ohm_per_km * noise
         x_ohm_per_km = x_ohm_per_km + rng.uniform(-noise_limit, noise_limit)
+
+    if perm:  # permute the line numbers
+        order = np.concatenate([[0], rng.permutation(np.arange(1, n+1))])
+        net.line['from_bus'] = net.line['from_bus'].map(order.__getitem__)
+        net.line['to_bus'] = net.line['to_bus'].map(order.__getitem__)
+        # r_ohm_per_km = rng.permutation(r_ohm_per_km)
+        # x_ohm_per_km = rng.permutation(x_ohm_per_km)
 
     r[net.line['from_bus'], net.line['to_bus']] = r_ohm_per_km
     r[net.line['to_bus'], net.line['from_bus']] = r_ohm_per_km
@@ -163,6 +175,9 @@ def create_RX_from_rx(r: np.ndarray, x: np.ndarray, G: nx.Graph,
 
     R = 2 * R[1:, 1:]
     X = 2 * X[1:, 1:]
+
+    assert np.all(R != np.inf)
+    assert np.all(X != np.inf)
 
     if check_pd:
         assert is_pos_def(R)

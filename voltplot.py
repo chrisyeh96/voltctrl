@@ -190,7 +190,7 @@ class VoltPlot:
             self.vpars_lines[l].set_data(ts, vpars[:, i])
 
         # extend out self.dist_line to match other plots
-        self.dist_line.set_data(dists[0] + [ts[-1]], dists[1] + dists[1][-1])
+        self.dist_line.set_data(dists[0] + [ts[-1]], dists[1] + [dists[1][-1]])
 
         for ax in self.axs:
             ax.relim()
