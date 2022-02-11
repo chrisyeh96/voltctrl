@@ -1,5 +1,8 @@
 ### CUSTOM
 .vscode/
+*.pdf
+*.npz
+*.svg
 ### END CUSTOM
 
 # Byte-compiled / optimized / DLL files

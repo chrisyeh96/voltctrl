@@ -35,8 +35,9 @@ def create_56bus() -> pp.pandapowerNet:
     return net
 
 
-def create_RX_from_net(net: pp.pandapowerNet, noise: float = 0, seed: int = 123,
-                      ) -> tuple[np.ndarray, np.ndarray]:
+def create_RX_from_net(net: pp.pandapowerNet, noise: float = 0,
+                       seed: int | None = 123, check_pd: bool = True
+                       ) -> tuple[np.ndarray, np.ndarray]:
     """Creates R,X matrices from a pandapowerNet.
 
     Args
@@ -55,21 +56,26 @@ def create_RX_from_net(net: pp.pandapowerNet, noise: float = 0, seed: int = 123,
     r = np.ones((n+1, n+1)) * np.inf
     x = np.ones((n+1, n+1)) * np.inf
 
+    r_ohm_per_km = net.line['r_ohm_per_km']
+    x_ohm_per_km = net.line['x_ohm_per_km']
+
     if noise > 0:
+        # Do NOT update r/x_ohm_per_km in-place. We do not want to change
+        # the underlying net object.
         rng = np.random.default_rng(seed)
-        noise_limit = net.line['r_ohm_per_km'] * noise
-        net.line['r_ohm_per_km'] += rng.uniform(-noise_limit, noise_limit)
+        noise_limit = r_ohm_per_km * noise
+        r_ohm_per_km = r_ohm_per_km + rng.uniform(-noise_limit, noise_limit)
 
-        noise_limit = net.line['x_ohm_per_km'] * noise
-        net.line['x_ohm_per_km'] += rng.uniform(-noise_limit, noise_limit)
+        noise_limit = x_ohm_per_km * noise
+        x_ohm_per_km = x_ohm_per_km + rng.uniform(-noise_limit, noise_limit)
 
-    r[net.line['from_bus'], net.line['to_bus']] = net.line['r_ohm_per_km']
-    r[net.line['to_bus'], net.line['from_bus']] = net.line['r_ohm_per_km']
-    x[net.line['from_bus'], net.line['to_bus']] = net.line['x_ohm_per_km']
-    x[net.line['to_bus'], net.line['from_bus']] = net.line['x_ohm_per_km']
+    r[net.line['from_bus'], net.line['to_bus']] = r_ohm_per_km
+    r[net.line['to_bus'], net.line['from_bus']] = r_ohm_per_km
+    x[net.line['from_bus'], net.line['to_bus']] = x_ohm_per_km
+    x[net.line['to_bus'], net.line['from_bus']] = x_ohm_per_km
 
     G = pp.topology.create_nxgraph(net)
-    R, X = create_RX_from_rx(r, x, G)
+    R, X = create_RX_from_rx(r, x, G, check_pd)
     return R, X
 
 
@@ -127,8 +133,8 @@ def make_pd_and_pos(A: np.ndarray) -> None:
         A[:] = (V * w) @ V.T
 
 
-def create_RX_from_rx(r: np.ndarray, x: np.ndarray, G: nx.Graph
-                      ) -> tuple[np.ndarray, np.ndarray]:
+def create_RX_from_rx(r: np.ndarray, x: np.ndarray, G: nx.Graph,
+                      check_pd: bool = True) -> tuple[np.ndarray, np.ndarray]:
     """Creates R,X matrices from line impedance matrices r and x.
 
     Args
@@ -146,20 +152,21 @@ def create_RX_from_rx(r: np.ndarray, x: np.ndarray, G: nx.Graph
     X = np.zeros((n+1, n+1), dtype=float)
 
     # P_i
-    paths = nx.shortest_path(G, source=0)
+    paths = nx.shortest_path(G, source=0)  # node i => path from node 0 to i
     for i in range(1, n+1):
         for j in range(i, n+1):
             intersect = get_intersecting_path(paths[i], paths[j])
-            R[i, j] = sum(r[e] for e in intersect)
-            X[i, j] = sum(x[e] for e in intersect)
+            R[i, j] = np.sum(r[e] for e in intersect)
+            X[i, j] = np.sum(x[e] for e in intersect)
             R[j, i] = R[i, j]
             X[j, i] = X[i, j]
 
     R = 2 * R[1:, 1:]
     X = 2 * X[1:, 1:]
 
-    assert is_pos_def(R)
-    assert is_pos_def(X)
+    if check_pd:
+        assert is_pos_def(R)
+        assert is_pos_def(X)
     return R, X
 
 
@@ -186,14 +193,14 @@ def read_load_data() -> tuple[np.ndarray, np.ndarray]:
     """Read in load data.
 
     Returns
-    - p: np.array, shape [n, T], active load in MW, TODO sign
-    - q: np.array, shape [n, T], reactive load in MVar, TODO sign
+    - p: np.array, shape [T, n], active load in MW, TODO sign
+    - q: np.array, shape [T, n], reactive load in MVar, TODO sign
     """
     mat = scipy.io.loadmat('data/pq_fluc.mat', squeeze_me=True)
     pq_fluc = mat['pq_fluc']  # shape (55, 2, 14421)
     p = pq_fluc[:, 0]  # active load, shape (55, 14421)
     qe = pq_fluc[:, 1]  # reactive load
-    return p, qe
+    return p.T, qe.T
 
 
 def smooth(x: np.ndarray, w: int = 5) -> np.ndarray:
