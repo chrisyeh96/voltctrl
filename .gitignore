@@ -3,6 +3,7 @@
 *.pdf
 *.npz
 *.svg
+*.pkl
 ### END CUSTOM
 
 # Byte-compiled / optimized / DLL files

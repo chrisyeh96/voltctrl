@@ -15,8 +15,7 @@ from cbc import CBCBase, CBCProjection, cp_triangle_norm_sq
 from network_utils import (
     create_56bus,
     create_RX_from_net,
-    read_load_data,
-    make_pd_and_pos
+    read_load_data
 )
 from robust_voltage_control import (
     VoltPlot,
