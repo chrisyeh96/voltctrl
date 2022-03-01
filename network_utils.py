@@ -37,7 +37,7 @@ def create_56bus() -> pp.pandapowerNet:
     return net
 
 
-def create_RX_from_net(net: pp.pandapowerNet, noise: float = 0, perm: bool = False,
+def create_RX_from_net(net: pp.pandapowerNet, noise: float = 0, modify: str | None = None,
                        seed: int | None = 123, check_pd: bool = True
                        ) -> tuple[np.ndarray, np.ndarray]:
     """Creates R,X matrices from a pandapowerNet.
@@ -45,6 +45,7 @@ def create_RX_from_net(net: pp.pandapowerNet, noise: float = 0, perm: bool = Fal
     Args
     - net: pandapowerNet with (n+1) buses including substation
     - noise: float, optional uniform noise to add to impedances, values in [0,1]
+    - modify: str, how to modify the network, one of [None, 'perm', 'linear', 'rand']
     - seed: int, for generating the uniform noise
 
     Returns: tuple (X, R)
@@ -60,8 +61,6 @@ def create_RX_from_net(net: pp.pandapowerNet, noise: float = 0, perm: bool = Fal
 
     r_ohm_per_km = net.line['r_ohm_per_km'].values
     x_ohm_per_km = net.line['x_ohm_per_km'].values
-    from_bus = net.line['from_bus']
-    to_bus = net.line['to_bus']
 
     rng = np.random.default_rng(seed)
 
@@ -74,19 +73,37 @@ def create_RX_from_net(net: pp.pandapowerNet, noise: float = 0, perm: bool = Fal
         noise_limit = x_ohm_per_km * noise
         x_ohm_per_km = x_ohm_per_km + rng.uniform(-noise_limit, noise_limit)
 
-    if perm:  # permute the line numbers
-        order = np.concatenate([[0], rng.permutation(np.arange(1, n+1))])
-        net.line['from_bus'] = net.line['from_bus'].map(order.__getitem__)
-        net.line['to_bus'] = net.line['to_bus'].map(order.__getitem__)
-        # r_ohm_per_km = rng.permutation(r_ohm_per_km)
-        # x_ohm_per_km = rng.permutation(x_ohm_per_km)
+    if modify in ('perm', None):  # permute the line numbers
+        if modify == 'perm':
+            order = np.concatenate([[0], rng.permutation(np.arange(1, n+1))])
+            net.line['from_bus'] = net.line['from_bus'].map(order.__getitem__)
+            net.line['to_bus'] = net.line['to_bus'].map(order.__getitem__)
 
-    r[net.line['from_bus'], net.line['to_bus']] = r_ohm_per_km
-    r[net.line['to_bus'], net.line['from_bus']] = r_ohm_per_km
-    x[net.line['from_bus'], net.line['to_bus']] = x_ohm_per_km
-    x[net.line['to_bus'], net.line['from_bus']] = x_ohm_per_km
+        r[net.line['from_bus'], net.line['to_bus']] = r_ohm_per_km
+        r[net.line['to_bus'], net.line['from_bus']] = r_ohm_per_km
+        x[net.line['from_bus'], net.line['to_bus']] = x_ohm_per_km
+        x[net.line['to_bus'], net.line['from_bus']] = x_ohm_per_km
+        G = pp.topology.create_nxgraph(net)
 
-    G = pp.topology.create_nxgraph(net)
+    elif modify in ('linear', 'rand'):
+        if modify == 'linear':  # random undirected linear tree
+            # substation (node 0) is not necessarily at one end of the path,
+            # could be in the middle
+            path = rng.permutation(n+1)
+            G = nx.path_graph(path)
+        else:
+            G = nx.random_tree(n+1)  # uniformly random undirected tree
+
+        r_sample = rng.choice(r_ohm_per_km, size=len(G.edges), replace=True)
+        x_sample = rng.choice(x_ohm_per_km, size=len(G.edges), replace=True)
+        for i, (e0, e1) in enumerate(G.edges):
+            r[e0, e1] = r_sample[i]
+            x[e0, e1] = x_sample[i]
+            r[e1, e0] = r[e0, e1]
+            x[e1, e0] = x[e0, e1]
+    else:
+        raise ValueError(f'Unexpected value for `modify`: {modify}')
+
     R, X = create_RX_from_rx(r, x, G, check_pd)
     return R, X
 
@@ -152,7 +169,7 @@ def create_RX_from_rx(r: np.ndarray, x: np.ndarray, G: nx.Graph,
     Args
     - r: np.array, shape [n+1, n+1], symmetric and entry-wise positive
     - x: np.array, shape [n+1, n+1], symmetric and entry-wise positive
-    - G: nx.Graph, undirected graph
+    - G: nx.Graph, undirected graph, nodes are numbered {0, ..., n}
 
     Returns: tuple (X, R)
     - X: np.array, shape [n, n], positive definite and entry-wise positive
