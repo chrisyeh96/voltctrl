@@ -67,12 +67,12 @@ class CBCProjection(CBCBase):
         constrs = self.X_set
         self.param = {}
 
-        Xprev = cp.Parameter([n, n], PSD=True, name='Xprev')
+        Xprev = cp.Parameter((n, n), PSD=True, name='Xprev')
         for b in ['lb', 'ub']:
-            vs = cp.Parameter([self.nsamples, n], name=f'vs_{b}')
-            delta_vs = cp.Parameter([self.nsamples, n], name=f'delta_vs_{b}')
-            us = cp.Parameter([self.nsamples, n], name=f'us_{b}')
-            qs = cp.Parameter([self.nsamples, n], name=f'qs_{b}')
+            vs = cp.Parameter((self.nsamples, n), name=f'vs_{b}')
+            delta_vs = cp.Parameter((self.nsamples, n), name=f'delta_vs_{b}')
+            us = cp.Parameter((self.nsamples, n), name=f'us_{b}')
+            qs = cp.Parameter((self.nsamples, n), name=f'qs_{b}')
 
             w_hats = delta_vs - us @ X
             vpar_hats = vs - qs @ X
