@@ -13,6 +13,8 @@ from tqdm.auto import tqdm
 
 from cbc.base import CBCBase, cp_triangle_norm_sq, project_into_X_set
 from cbc.projection import CBCProjection
+from cbc.steiner import CBCSteiner
+# from cbc.steiner import CBCSteiner
 from network_utils import (
     create_56bus,
     create_RX_from_net,
@@ -168,6 +170,13 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
             v=vpars[start], gen_X_set=gen_X_set, Vpar=(Vpar_min, Vpar_max),
             X_init=X_init, X_true=X, log=log, seed=seed)
         save_dict.update(w_inds=sel.w_inds, vpar_inds=sel.vpar_inds)
+    elif cbc_alg == 'steiner':
+        dim = n * (n+1) // 2
+        params.update(nsamples=nsamples, nsamples_steiner=dim)
+        sel = CBCSteiner(
+            eta=eta, n=n, T=T-start, nsamples=nsamples, nsamples_steiner=dim,
+            v=vpars[start], gen_X_set=gen_X_set, Vpar=(Vpar_min, Vpar_max),
+            X_init=X_init, X_true=X, log=log, seed=seed)
     else:
         raise ValueError('unknown cbc_alg')
 

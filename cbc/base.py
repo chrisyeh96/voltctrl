@@ -100,11 +100,11 @@ class CBCBase:
         assert X_init.shape == (n, n)
 
         self.X_set = gen_X_set(self.var_X)
-        self._project_into_X_set(X_init)
+        self._init_X(X_init)
         self.X_init = self.var_X.value.copy()  # make a copy
         self.X_cache = self.var_X.value.copy()  # make a copy
 
-    def _project_into_X_set(self, X_init: np.ndarray) -> None:
+    def _init_X(self, X_init: np.ndarray) -> None:
         project_into_X_set(X_init=X_init, var_X=self.var_X,
                            log=self.log, X_set=self.X_set)
 
