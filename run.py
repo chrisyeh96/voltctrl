@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 import pickle
 import datetime as dt
+import os
 from typing import Any
 
 import cvxpy as cp
@@ -11,17 +12,16 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
-from cbc import CBCBase, CBCProjection, cp_triangle_norm_sq
+from cbc.base import CBCBase, cp_triangle_norm_sq
+from cbc.projection import CBCProjection
 from network_utils import (
     create_56bus,
     create_RX_from_net,
-    read_load_data
-)
+    read_load_data)
 from robust_voltage_control import (
     VoltPlot,
     np_triangle_norm,
-    robust_voltage_control
-)
+    robust_voltage_control)
 
 Constraint = cp.constraints.constraint.Constraint
 
@@ -67,7 +67,7 @@ def meta_gen_X_set(norm_bound: float, X_true: np.ndarray
 
 def run(epsilon: float, q_max: float, cbc_alg: str,
         eta: float, norm_bound: float,
-        noise: float = 0, perm: bool = False,
+        noise: float = 0, modify: str | None = None,
         nsamples: int = 100, seed: int = 123,
         is_interactive: bool = False, savedir: str = '',
         pbar: tqdm | None = None) -> str:
@@ -78,7 +78,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str,
     - q_max: float, maximum reactive power injection
     - norm_bound: float
     - noise: float, network impedances modified by fraction Uniform(±noise)
-    - perm: bool, whether to randomly permute network impedances
+    - modify: bool, whether to randomly permute network impedances
     - seed: int, random seed
     - savedir: str, path to folder for saving outputs ('' for current dir)
     - pbar_pos: int, optional position for tqdm progress bar
@@ -95,14 +95,14 @@ def run(epsilon: float, q_max: float, cbc_alg: str,
     filename = os.path.join(savedir, f'CBC{cbc_alg}')
 
     # read in data
-    if noise > 0 or perm:
+    if noise > 0 or modify is not None:
         params.update(seed=seed, norm_bound=norm_bound)
         if noise > 0:
             params.update(noise=noise)
             filename += f'_noise{noise}'
-        if perm:
-            params.update(perm=perm)
-            filename += '_perm'
+        if modify is not None:
+            params.update(modify=modify)
+            filename += f'_{modify}'
         filename += f'_norm{norm_bound}_seed{seed}'
 
     net = create_56bus()
@@ -141,7 +141,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str,
     # randomly initialize a network matrix
     # import pdb
     # pdb.set_trace()
-    _, X_init = create_RX_from_net(net, noise=noise, perm=perm, check_pd=True, seed=seed)
+    _, X_init = create_RX_from_net(net, noise=noise, modify=modify, check_pd=True, seed=seed)
     save_dict = {
         'X_init': X_init
     }
@@ -212,7 +212,7 @@ if __name__ == '__main__':
         eta=8.65,
         norm_bound=0.2,
         noise=0.4,
-        perm=True,
+        modify='perm',
         seed=14,
         pbar=tqdm(),
         is_interactive=False)

@@ -154,7 +154,8 @@ def make_pd_and_pos(A: np.ndarray) -> None:
     Updates A in-place.
     Guarantees output to be PSD. Does NOT guarantee entrywise positive.
     """
-    A[:] = (A + A.T) / 2  # make symmetric
+    if not np.array_equal(A, A.T):
+        A[:] = (A + A.T) / 2  # make symmetric
     np.maximum(0, A, out=A)  # make positive, in-place
     w, V = np.linalg.eigh(A)
     if w[0] < 0:
