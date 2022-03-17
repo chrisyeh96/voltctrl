@@ -14,7 +14,6 @@ from tqdm.auto import tqdm
 from cbc.base import CBCBase, cp_triangle_norm_sq, project_into_X_set
 from cbc.projection import CBCProjection
 from cbc.steiner import CBCSteiner
-# from cbc.steiner import CBCSteiner
 from network_utils import (
     create_56bus,
     create_RX_from_net,
@@ -77,19 +76,25 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
         noise: float = 0, modify: str | None = None,
         nsamples: int = 100, seed: int = 123,
         is_interactive: bool = False, savedir: str = '',
-        pbar: tqdm | None = None) -> str:
+        pbar: tqdm | None = None,
+        tag: str = '') -> str:
     """
     Args
-    - eta: float, maximum ||w||∞
     - epsilon: float, robustness
     - q_max: float, maximum reactive power injection
+    - cbc_alg: str, one of ['const', 'proj', 'steiner']
+    - eta: float, maximum ||w||∞
     - norm_bound: float
     - norm_bound_init: float or None
     - noise: float, network impedances modified by fraction Uniform(±noise)
     - modify: str, how to modify network, one of [None, 'perm', 'linear', 'rand']
+    - nsamples: int, # of samples to use for computing consistent set,
+        only used when cbc_alg is 'proj' or 'steiner'
     - seed: int, random seed
+    - is_interactive: bool, whether to output to screen, or log to disk
     - savedir: str, path to folder for saving outputs ('' for current dir)
-    - pbar_pos: int, optional position for tqdm progress bar
+    - pbar: tqdm instance
+    - tag: str, arbitrary tag to add to filename ('' for no tag)
 
     Returns: str, filename (without extension)
     """
@@ -140,11 +145,13 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
         v_min=v_min, v_max=v_max, v_nom=v_nom, Pv=Pv, Pu=Pu, beta=beta)
     # ==== end of FIXED PARAMETERS ====
 
+    filename += tag
     filename += start_time.strftime('_%Y%m%d_%H%M%S')
     if is_interactive:
         log = tqdm
     else:
         log = wrap_write_newlines(open(f'{filename}.log', 'w'))
+    log.write(f'filename: {filename}')
 
     start = 0
 
@@ -238,4 +245,5 @@ if __name__ == '__main__':
             seed=seed,
             pbar=tqdm(),
             is_interactive=False,
-            savedir='out')
+            savedir='out',
+            tag='')
