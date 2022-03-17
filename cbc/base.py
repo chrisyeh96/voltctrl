@@ -17,6 +17,27 @@ def cp_triangle_norm_sq(x: cp.Expression) -> cp.Expression:
     return cp.norm(cp.upper_tri(x), 2)**2 + cp.norm(cp.diag(x), 2)**2
 
 
+def project_into_X_set(X_init: np.ndarray, var_X: cp.Variable,
+                       log: tqdm | io.TextIOBase | None,
+                       X_set: list[Constraint]) -> None:
+    """Project X_init into 𝒳 if necessary."""
+    var_X.value = X_init  # if var_X.is_psd(), this automatically checks that X_init is PSD
+    total_violation = sum(np.sum(constraint.violation()) for constraint in X_set)
+    if total_violation == 0 and log is not None:
+        log.write('X_init valid.')
+    else:
+        if log is not None:
+            log.write(f'X_init invalid. Violation: {total_violation:.3f}. Projecting into 𝒳.')
+        obj = cp.Minimize(cp_triangle_norm_sq(X_init - var_X))
+        prob = cp.Problem(objective=obj, constraints=X_set)
+        # prob.solve(eps=0.05, max_iters=300)
+        prob.solve(solver=cp.MOSEK)
+        make_pd_and_pos(var_X.value)
+        total_violation = sum(np.sum(constraint.violation()) for constraint in X_set)
+        if log is not None:
+            log.write(f'After projection: X_init violation: {total_violation:.3f}.')
+
+
 class CBCBase:
     """Base class for Consistent Model Chasing.
 
@@ -75,9 +96,8 @@ class CBCBase:
         self.q = np.zeros([T, n])  # q[t] = q^c(t)
 
         # define optimization variables
-        self.var_X = cp.Variable([n, n], PSD=True)
+        self.var_X = cp.Variable((n, n), PSD=True)
         assert X_init.shape == (n, n)
-        self.var_X.value = X_init  # this automatically checks if X_init is PSD
 
         self.X_set = gen_X_set(self.var_X)
         self._project_into_X_set(X_init)
@@ -85,19 +105,8 @@ class CBCBase:
         self.X_cache = self.var_X.value.copy()  # make a copy
 
     def _project_into_X_set(self, X_init: np.ndarray) -> None:
-        # project X_init into 𝒳 if necessary
-        total_violation = sum(np.sum(constraint.violation()) for constraint in self.X_set)
-        if total_violation == 0:
-            self.log.write(f'X_init valid.')
-        else:
-            self.log.write(f'X_init invalid. Violation: {total_violation:.3f}. Projecting into 𝒳.')
-            obj = cp.Minimize(cp_triangle_norm_sq(X_init - self.var_X))
-            prob = cp.Problem(objective=obj, constraints=self.X_set)
-            # prob.solve(eps=0.05, max_iters=300)
-            prob.solve(solver=cp.MOSEK)
-            make_pd_and_pos(self.var_X.value)
-            total_violation = sum(np.sum(constraint.violation()) for constraint in self.X_set)
-            self.log.write(f'After projection: X_init violation: {total_violation:.3f}.')
+        project_into_X_set(X_init=X_init, var_X=self.var_X,
+                           log=self.log, X_set=self.X_set)
 
     def add_obs(self, t: int) -> None:
         """Process new observation.

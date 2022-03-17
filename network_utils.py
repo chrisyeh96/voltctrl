@@ -75,7 +75,8 @@ def create_RX_from_net(net: pp.pandapowerNet, noise: float = 0, modify: str | No
 
     if modify in ('perm', None):  # permute the line numbers
         if modify == 'perm':
-            order = np.concatenate([[0], rng.permutation(np.arange(1, n+1))])
+            order = np.zeros(n+1, dtype=int)
+            order[1:] = rng.permutation(np.arange(1, n+1))
             net.line['from_bus'] = net.line['from_bus'].map(order.__getitem__)
             net.line['to_bus'] = net.line['to_bus'].map(order.__getitem__)
 
@@ -263,7 +264,7 @@ def smooth(x: np.ndarray, w: int = 5) -> np.ndarray:
 
 
 def calc_max_norm_w(R: np.ndarray, X: np.ndarray, p: np.ndarray, qe: np.ndarray
-                   ) -> dict[str, np.ndarray]:
+                    ) -> dict[str, np.ndarray]:
     """Calculates ||w||_∞.
 
     Args

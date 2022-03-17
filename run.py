@@ -9,10 +9,9 @@ from typing import Any
 import cvxpy as cp
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 from tqdm.auto import tqdm
 
-from cbc.base import CBCBase, cp_triangle_norm_sq
+from cbc.base import CBCBase, cp_triangle_norm_sq, project_into_X_set
 from cbc.projection import CBCProjection
 from network_utils import (
     create_56bus,
@@ -22,6 +21,12 @@ from robust_voltage_control import (
     VoltPlot,
     np_triangle_norm,
     robust_voltage_control)
+
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 Constraint = cp.constraints.constraint.Constraint
 
@@ -65,8 +70,8 @@ def meta_gen_X_set(norm_bound: float, X_true: np.ndarray
     return gen_𝒳
 
 
-def run(epsilon: float, q_max: float, cbc_alg: str,
-        eta: float, norm_bound: float,
+def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
+        norm_bound: float, norm_bound_init: float | None = None,
         noise: float = 0, modify: str | None = None,
         nsamples: int = 100, seed: int = 123,
         is_interactive: bool = False, savedir: str = '',
@@ -77,8 +82,9 @@ def run(epsilon: float, q_max: float, cbc_alg: str,
     - epsilon: float, robustness
     - q_max: float, maximum reactive power injection
     - norm_bound: float
+    - norm_bound_init: float or None
     - noise: float, network impedances modified by fraction Uniform(±noise)
-    - modify: bool, whether to randomly permute network impedances
+    - modify: str, how to modify network, one of [None, 'perm', 'linear', 'rand']
     - seed: int, random seed
     - savedir: str, path to folder for saving outputs ('' for current dir)
     - pbar_pos: int, optional position for tqdm progress bar
@@ -96,13 +102,15 @@ def run(epsilon: float, q_max: float, cbc_alg: str,
 
     # read in data
     if noise > 0 or modify is not None:
-        params.update(seed=seed, norm_bound=norm_bound)
+        params.update(seed=seed, norm_bound=norm_bound, norm_bound_init=norm_bound_init)
         if noise > 0:
             params.update(noise=noise)
             filename += f'_noise{noise}'
         if modify is not None:
             params.update(modify=modify)
             filename += f'_{modify}'
+        if norm_bound_init is not None:
+            filename += f'_norminit{norm_bound_init}'
         filename += f'_norm{norm_bound}_seed{seed}'
 
     net = create_56bus()
@@ -110,7 +118,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str,
     p, qe = read_load_data()  # in MW and MVar
     T, n = p.shape
 
-    ### FIXED PARAMETERS
+    # ==== FIXED PARAMETERS ====
     v_min, v_max = (11.4**2, 12.6**2)  # +/-5%, units kV^2
     v_nom = 12**2  # nominal squared voltage magnitude, units kV^2
     v_sub = v_nom  # fixed squared voltage magnitude at substation, units kV^2
@@ -128,7 +136,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str,
 
     params.update(
         v_min=v_min, v_max=v_max, v_nom=v_nom, Pv=Pv, Pu=Pu, beta=beta)
-    ### end of FIXED PARAMETERS
+    # ==== end of FIXED PARAMETERS ====
 
     filename += start_time.strftime('_%Y%m%d_%H%M%S')
     if is_interactive:
@@ -139,12 +147,14 @@ def run(epsilon: float, q_max: float, cbc_alg: str,
     start = 0
 
     # randomly initialize a network matrix
-    # import pdb
-    # pdb.set_trace()
     _, X_init = create_RX_from_net(net, noise=noise, modify=modify, check_pd=True, seed=seed)
-    save_dict = {
-        'X_init': X_init
-    }
+    save_dict = dict(X_init=X_init)
+    if norm_bound_init is not None:
+        assert norm_bound_init < norm_bound
+        var_X = cp.Variable(X.shape, PSD=True)
+        init_X_set = meta_gen_X_set(norm_bound=norm_bound_init, X_true=X)(var_X)
+        project_into_X_set(X_init=X_init, var_X=var_X, log=log, X_set=init_X_set)
+        X_init = var_X.value
 
     gen_X_set = meta_gen_X_set(norm_bound=norm_bound, X_true=X)
 
@@ -197,6 +207,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str,
 
 def wrap_write_newlines(f: Any) -> Any:
     old_write = f.write
+
     def new_write(s):
         old_write(s + '\n')
         f.flush()
@@ -205,14 +216,17 @@ def wrap_write_newlines(f: Any) -> Any:
 
 
 if __name__ == '__main__':
-    run(
-        epsilon=0.1,
-        q_max=0.24,
-        cbc_alg='proj',
-        eta=8.65,
-        norm_bound=0.2,
-        noise=0.4,
-        modify='perm',
-        seed=14,
-        pbar=tqdm(),
-        is_interactive=False)
+    for seed in [10, 11]:
+        run(
+            epsilon=0.1,
+            q_max=0.24,
+            cbc_alg='const',
+            eta=8.65,
+            norm_bound=1.0,
+            norm_bound_init=None,
+            noise=1.0,
+            modify='perm',
+            seed=seed,
+            pbar=tqdm(),
+            is_interactive=False,
+            savedir='out')
