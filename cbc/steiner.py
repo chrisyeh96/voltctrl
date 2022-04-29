@@ -22,7 +22,7 @@ class CBCSteiner(CBCBase):
                  gen_X_set: Callable[[cp.Variable], list[Constraint]],
                  eta: float, nsamples: int, nsamples_steiner: int, # alpha: float,
                  Vpar: tuple[np.ndarray, np.ndarray],
-                 X_true: np.ndarray | None = None,
+                 X_true: np.ndarray,
                  log: tqdm | io.TextIOBase | None = None, seed: int = 123):
         """
         Args

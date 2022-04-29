@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 import pickle
 import datetime as dt
 import os
@@ -74,6 +74,7 @@ def meta_gen_X_set(norm_bound: float, X_true: np.ndarray
 def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
         norm_bound: float, norm_bound_init: float | None = None,
         noise: float = 0, modify: str | None = None,
+        obs_nodes: Sequence[int] | None = None,
         nsamples: int = 100, seed: int = 123,
         is_interactive: bool = False, savedir: str = '',
         pbar: tqdm | None = None,
@@ -104,7 +105,8 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
     start_time = dt.datetime.now(tz)
 
     params: dict[str, Any] = dict(
-        cbc_alg=cbc_alg, q_max=q_max, epsilon=epsilon, eta=eta)
+        cbc_alg=cbc_alg, q_max=q_max, epsilon=epsilon, eta=eta,
+        obs_nodes=obs_nodes)
     filename = os.path.join(savedir, f'CBC{cbc_alg}')
 
     # read in data
@@ -232,18 +234,22 @@ def wrap_write_newlines(f: Any) -> Any:
 
 
 if __name__ == '__main__':
-    for seed in [10, 11]:
+    all_nodes = np.arange(55)
+    exclude = np.array([9, 19, 22, 31, 40, 46, 55]) - 2
+    obs_nodes = np.setdiff1d(all_nodes, exclude).tolist()
+    for seed in [8, 9, 10, 11]:
         run(
             epsilon=0.1,
             q_max=0.24,
-            cbc_alg='const',
+            cbc_alg='proj',
             eta=8.65,
             norm_bound=1.0,
             norm_bound_init=None,
             noise=1.0,
             modify='perm',
+            obs_nodes=obs_nodes,
             seed=seed,
             pbar=tqdm(),
             is_interactive=False,
             savedir='out',
-            tag='')
+            tag='_partialobs')

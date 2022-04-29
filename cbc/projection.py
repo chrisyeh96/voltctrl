@@ -1,7 +1,7 @@
 """Convex body chasing via projection."""
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 import io
 
 import cvxpy as cp
@@ -22,7 +22,8 @@ class CBCProjection(CBCBase):
                  gen_X_set: Callable[[cp.Variable], list[Constraint]],
                  eta: float, nsamples: int, alpha: float,
                  Vpar: tuple[np.ndarray, np.ndarray],
-                 X_true: np.ndarray | None = None,
+                 X_true: np.ndarray,
+                 obs_nodes: Sequence[int] | None = None,
                  log: tqdm | io.TextIOBase | None = None, seed: int = 123):
         """
         Args
@@ -35,7 +36,7 @@ class CBCProjection(CBCBase):
         - seed: int, random seed
         """
         super().__init__(n=n, T=T, X_init=X_init, v=v, gen_X_set=gen_X_set,
-                         X_true=X_true, log=log)
+                         X_true=X_true, obs_nodes=obs_nodes, log=log)
         self.is_cached = True
 
         self.eta = eta
@@ -78,11 +79,15 @@ class CBCProjection(CBCBase):
             vpar_hats = vs - qs @ X
 
             if b == 'lb':
-                constrs.extend([lb - slack_w <= w_hats,
-                                self.Vpar_min[None, :] <= vpar_hats])
+                constrs.extend([
+                    lb - slack_w <= w_hats,
+                    self.Vpar_min[None, self.obs_nodes] <= vpar_hats[:, self.obs_nodes]
+                ])
             else:
-                constrs.extend([w_hats <= ub + slack_w,
-                                vpar_hats <= self.Vpar_max[None, :]])
+                constrs.extend([
+                    w_hats <= ub + slack_w,
+                    vpar_hats[:, self.obs_nodes] <= self.Vpar_max[None, self.obs_nodes]
+                ])
 
             self.param[f'vs_{b}'] = vs
             self.param[f'delta_vs_{b}'] = delta_vs

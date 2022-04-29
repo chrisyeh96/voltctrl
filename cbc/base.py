@@ -1,7 +1,7 @@
 """Convex body chasing base class + utilities."""
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 import io
 
 import cvxpy as cp
@@ -78,6 +78,7 @@ class CBCBase:
     def __init__(self, n: int, T: int, X_init: np.ndarray, v: np.ndarray,
                  gen_X_set: Callable[[cp.Variable], list[Constraint]],
                  X_true: np.ndarray,
+                 obs_nodes: Sequence[int] | None = None,
                  log: tqdm | io.TextIOBase | None = None):
         """
         Args
@@ -90,6 +91,7 @@ class CBCBase:
             a list of constraints (cp.Constraint) describing the convex, compact
             uncertainty set for X
         - X_true: np.array, shape [n, n], true X matrix, optional
+        - obs_nodes: list of int, nodes that we can observe voltages for
         - log: object with .write() function, defaults to tqdm
         """
         self.n = n
@@ -115,6 +117,11 @@ class CBCBase:
         self._init_X(X_init)
         self.X_init = self.var_X.value.copy()  # make a copy
         self.X_cache = self.var_X.value.copy()  # make a copy
+
+        # handle observable nodes
+        if obs_nodes is None:
+            obs_nodes = list(range(n))
+        self.obs_nodes = obs_nodes
 
     def _init_X(self, X_init: np.ndarray) -> None:
         project_into_X_set(X_init=X_init, var_X=self.var_X,
