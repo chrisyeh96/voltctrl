@@ -288,3 +288,8 @@ def calc_max_norm_w(R: np.ndarray, X: np.ndarray, p: np.ndarray, qe: np.ndarray
     # max_p_idx = np.argmax(np.max(np.abs(wp), axis=1))
     # max_q_idx = np.argmax(np.max(np.abs(wq), axis=1))
     return norms
+
+
+def np_triangle_norm(x: np.ndarray) -> float:
+    """Computes ||X||_△"""
+    return np.linalg.norm(np.triu(x), ord='fro')

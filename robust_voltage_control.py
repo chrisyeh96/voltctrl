@@ -7,6 +7,7 @@ import cvxpy as cp
 import numpy as np
 from tqdm.auto import tqdm
 
+from network_utils import np_triangle_norm
 from voltplot import VoltPlot
 
 
@@ -167,11 +168,6 @@ def robust_voltage_control(
         volt_plot.show(clear_display=False)
 
     return vs, qcs, dists
-
-
-def np_triangle_norm(x: np.ndarray) -> float:
-    """Computes ||X||_△"""
-    return np.linalg.norm(np.triu(x), ord='fro')
 
 
 def update_dists(dists: dict[str, list], t: int, Xhat: np.ndarray,

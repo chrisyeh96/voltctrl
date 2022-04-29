@@ -8,7 +8,7 @@ import cvxpy as cp
 import numpy as np
 from tqdm.auto import tqdm
 
-from network_utils import make_pd_and_pos
+from network_utils import make_pd_and_pos, np_triangle_norm
 
 Constraint = cp.constraints.constraint.Constraint
 
@@ -19,8 +19,13 @@ def cp_triangle_norm_sq(x: cp.Expression) -> cp.Expression:
 
 def project_into_X_set(X_init: np.ndarray, var_X: cp.Variable,
                        log: tqdm | io.TextIOBase | None,
-                       X_set: list[Constraint]) -> None:
+                       X_set: list[Constraint], X_true: np.ndarray) -> None:
     """Project X_init into 𝒳 if necessary."""
+    if log is not None:
+        norm = np_triangle_norm(X_init)
+        dist = np_triangle_norm(X_init - X_true)
+        log.write(f'X_init: ||X̂||_△ = {norm:.3f}, ||X̂-X||_△ = {dist:.3f}')
+
     var_X.value = X_init  # if var_X.is_psd(), this automatically checks that X_init is PSD
     total_violation = sum(np.sum(constraint.violation()) for constraint in X_set)
     if total_violation == 0 and log is not None:
@@ -30,12 +35,19 @@ def project_into_X_set(X_init: np.ndarray, var_X: cp.Variable,
             log.write(f'X_init invalid. Violation: {total_violation:.3f}. Projecting into 𝒳.')
         obj = cp.Minimize(cp_triangle_norm_sq(X_init - var_X))
         prob = cp.Problem(objective=obj, constraints=X_set)
-        # prob.solve(eps=0.05, max_iters=300)
-        prob.solve(solver=cp.MOSEK)
+        try:
+            prob.solve(solver=cp.MOSEK)
+        except cp.error.SolverError as e:
+            if log is not None:
+                log.write(str(e))
+            prob.solve(solver=cp.SCS)
         make_pd_and_pos(var_X.value)
-        total_violation = sum(np.sum(constraint.violation()) for constraint in X_set)
         if log is not None:
+            total_violation = sum(np.sum(constraint.violation()) for constraint in X_set)
+            norm = np_triangle_norm(var_X.value)
+            dist = np_triangle_norm(var_X.value - X_true)
             log.write(f'After projection: X_init violation: {total_violation:.3f}.')
+            log.write(f'                  ||X̂||_△ = {norm:.3f}, ||X̂-X||_△ = {dist:.3f}')
 
 
 class CBCBase:
@@ -65,7 +77,7 @@ class CBCBase:
     """
     def __init__(self, n: int, T: int, X_init: np.ndarray, v: np.ndarray,
                  gen_X_set: Callable[[cp.Variable], list[Constraint]],
-                 X_true: np.ndarray | None = None,
+                 X_true: np.ndarray,
                  log: tqdm | io.TextIOBase | None = None):
         """
         Args
@@ -106,7 +118,8 @@ class CBCBase:
 
     def _init_X(self, X_init: np.ndarray) -> None:
         project_into_X_set(X_init=X_init, var_X=self.var_X,
-                           log=self.log, X_set=self.X_set)
+                           log=self.log, X_set=self.X_set,
+                           X_true=self.X_true)
 
     def add_obs(self, t: int) -> None:
         """Process new observation.

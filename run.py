@@ -17,10 +17,10 @@ from cbc.steiner import CBCSteiner
 from network_utils import (
     create_56bus,
     create_RX_from_net,
+    np_triangle_norm,
     read_load_data)
 from robust_voltage_control import (
     VoltPlot,
-    np_triangle_norm,
     robust_voltage_control)
 
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -162,7 +162,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
         assert norm_bound_init < norm_bound
         var_X = cp.Variable(X.shape, PSD=True)
         init_X_set = meta_gen_X_set(norm_bound=norm_bound_init, X_true=X)(var_X)
-        project_into_X_set(X_init=X_init, var_X=var_X, log=log, X_set=init_X_set)
+        project_into_X_set(X_init=X_init, var_X=var_X, log=log, X_set=init_X_set, X_true=X)
         X_init = var_X.value
 
     gen_X_set = meta_gen_X_set(norm_bound=norm_bound, X_true=X)

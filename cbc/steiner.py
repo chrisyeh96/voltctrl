@@ -292,7 +292,7 @@ class CBCSteiner(CBCBase):
 
         prob = self.prob
         X_values = []
-        for i in range(self.nsamples_steiner):
+        for i in tqdm(range(self.nsamples_steiner)):
             self.param['theta'].value = self.rng.normal(size=self.dim)
             prob.solve(solver=cp.MOSEK)
             X_values.append(X.value.copy())
