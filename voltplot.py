@@ -173,7 +173,7 @@ class VoltPlot:
             # plt.close()  # so that the plot doesn't show
 
     def update(self, qcs: np.ndarray, vs: np.ndarray, vpars: np.ndarray,
-               dists: tuple[list, list]) -> None:
+               dists: tuple[list, list] | None) -> None:
         """
         Args
         - qcs: np.array, shape [T, n]
@@ -190,7 +190,9 @@ class VoltPlot:
             self.vpars_lines[l].set_data(ts, vpars[:, i])
 
         # extend out self.dist_line to match other plots
-        self.dist_line.set_data(dists[0] + [ts[-1]], dists[1] + [dists[1][-1]])
+        if dists is not None:
+            self.dist_line.set_data(dists[0] + [ts[-1]],
+                                    dists[1] + [dists[1][-1]])
 
         for ax in self.axs:
             ax.relim()

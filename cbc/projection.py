@@ -227,6 +227,9 @@ class CBCProjection(CBCBase):
         lb = -ub
 
         # optimization variables
+        # - assuming that assumptions 1, 2, and the first part of 3
+        #     ($\forall t: \vpar(t) \in \Vpar$) are satisfied, we don't need
+        #     actually need a slack variable in SEL (the CBC algorithm)
         X = self.var_X
         slack_w = self.var_slack_w
 
