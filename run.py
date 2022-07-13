@@ -85,8 +85,9 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
     - q_max: float, maximum reactive power injection
     - cbc_alg: str, one of ['const', 'proj', 'steiner']
     - eta: float, maximum ||w||∞
-    - norm_bound: float
-    - norm_bound_init: float or None
+    - norm_bound: float, size of uncertainty set
+    - norm_bound_init: float or None, norm of uncertainty set from which
+        X_init is sampled
     - noise: float, network impedances modified by fraction Uniform(±noise)
     - modify: str, how to modify network, one of [None, 'perm', 'linear', 'rand']
     - nsamples: int, # of samples to use for computing consistent set,
@@ -155,7 +156,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
         log = wrap_write_newlines(open(f'{filename}.log', 'w'))
     log.write(f'filename: {filename}')
 
-    start = 0
+    start = 0  # starting time step
 
     # randomly initialize a network matrix
     _, X_init = create_RX_from_net(net, noise=noise, modify=modify, check_pd=True, seed=seed)
