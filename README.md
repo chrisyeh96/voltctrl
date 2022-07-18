@@ -22,14 +22,14 @@
 - float64 array, shape [14421]
 - min: ~2.4, max: ~7.1
 - units: MW
-- description: active power injection, measured every 6 seconds for 24h
+- description: active power load, measured every 6 seconds for 24h
 
 **aggr_q.mat**
 - contains single key `'q'`
 - float64 array, shape [14421]
 - min: ~1.1, max: ~3.1
 - units: MVar
-- description: reactive power injection, measured every 6 seconds for 24h
+- description: reactive power load, measured every 6 seconds for 24h
 
 **pq_fluc.mat**
 - contains single key `'pq_fluc'`
@@ -37,13 +37,15 @@
 - units: MW for p, MVar for q
 - for p, min: ~-0.9, max: ~3.7
 - for q, min: ~-0.5, max: ~0.0
-- description: p,q variation (sum of solar + load) at 55 buses, measured every 6 seconds for 24h
-  - both p and q are power injection (+ means generation, - means load)
+- description: active and reactive power injection at 55 buses, measured every 6 seconds for 24h
+  - first column is p, second column is q
+  - + means generation, - means load
+  - p is net active power injection (solar generation - load)
 
 **SCE_56bus.mat**
 - contains single key `'case_mpc'`
-- description: a "MATPOWER" file. See the convert2matpower.m file for description.
-- mat['case_mpc'][0,0] has 4 "keys"
+- description: a "MATPOWER" file
+- `mat['case_mpc'][0,0]` has 4 "keys"
     - 'version': shape [1], type uint8
     - 'baseMVA': shape [1, 1], type uint8, reference voltage at root bus
     - 'bus': shape [56, 13], type float64
