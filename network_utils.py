@@ -224,16 +224,16 @@ def calc_voltage_profile(X: np.ndarray, R: np.ndarray, p: np.ndarray,
 
 
 def read_load_data() -> tuple[np.ndarray, np.ndarray]:
-    """Read in load data.
+    """Read in power injection data.
 
     Returns
-    - p: np.array, shape [T, n], active load in MW, TODO sign
-    - q: np.array, shape [T, n], reactive load in MVar, TODO sign
+    - p: np.array, shape [T, n], net active power injection in MW
+    - q: np.array, shape [T, n], exogenous reactive power injection in MVar
     """
     mat = scipy.io.loadmat('data/pq_fluc.mat', squeeze_me=True)
     pq_fluc = mat['pq_fluc']  # shape (55, 2, 14421)
-    p = pq_fluc[:, 0]  # active load, shape (55, 14421)
-    qe = pq_fluc[:, 1]  # reactive load
+    p = pq_fluc[:, 0]  # net active power injection, shape (55, 14421)
+    qe = pq_fluc[:, 1]  # exogenous reactive power injection
     return p.T, qe.T
 
 
@@ -270,8 +270,8 @@ def calc_max_norm_w(R: np.ndarray, X: np.ndarray, p: np.ndarray, qe: np.ndarray
     Args
     - R: shape [n, n]
     - X: shape [n, n]
-    - p: shape [n, T], active power load
-    - qe: shape [n, T], exogenous reactive load
+    - p: shape [n, T], active power injection
+    - qe: shape [n, T], exogenous reactive power injection
 
     Returns: norms, dict maps keys ['w', 'wp', 'wq'] to np.ndarray of shape [T]
     """
