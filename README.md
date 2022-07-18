@@ -10,6 +10,11 @@
 
 ## Data Files (in `/data`)
 
+The original data files were provided by the authors of the following paper:
+> Guannan Qu and Na Li. 2020. Optimal Distributed Feedback Voltage Control under Limited Reactive Power. _IEEE Transactions on Power Systems_ 35, 1 (Jan. 2020), 315–331. https://doi.org/10.1109/TPWRS.2019.2931685
+
+The original data files ("orig_data.zip") are attached to the [releases](https://github.com/chrisyeh96/voltctrl/releases/tag/v1.0). These original data files have been processed into the following files, which are the only files relevant for our experiments. See the inspect_matlab_data.ipynb notebook for details.
+
 **PV.mat**
 - contains single key `'actual_PV_profile'`
 - float64 array, shape [14421]
@@ -52,12 +57,12 @@
     - 'branch': shape [55, 13], type float64
     - 'gen': shape [1, 21], type int16
 
-See the attachment attached to [releases](https://github.com/chrisyeh96/voltctrl/releases) for Python `.pkl` files containing the results of running the various algorithms. These Pickle files are read by the various Jupyter notebooks for plotting and analysis.
+See the attachment in [releases](https://github.com/chrisyeh96/voltctrl/releases/tag/v1.0) for Python `.pkl` files containing the results of running the various algorithms. These Pickle files are read by the various Jupyter notebooks for plotting and analysis.
 
 
 ## Citation
 
-Please cite this article as follows, or use the BibTeX entry below.
+Please cite this paper as follows, or use the BibTeX entry below.
 
 > C. Yeh, J. Yu, Y. Shi, and A. Wierman, "Robust online voltage control with an unknown grid topology," in _Proceedings of the Thirteenth ACM International Conference on Future Energy Systems (e-Energy '22)_, Association for Computing Machinery, Jun. 2022, pp. 240–250, ISBN: 9781450393973. DOI: 10.1145/3538637.3538853. [Online]. Available: [https://dl.acm.org/doi/10.1145/3538637.3538853](https://dl.acm.org/doi/10.1145/3538637.3538853).
 
