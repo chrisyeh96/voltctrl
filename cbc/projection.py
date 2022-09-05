@@ -191,6 +191,8 @@ class CBCProjection(CBCBase):
         w_hat = self.delta_v[t-1] - self.u[t-1] @ self.X_cache
         vpar_hat = self.v[t] - self.q[t] @ self.X_cache
         w_hat_norm = np.max(np.abs(w_hat))
+        # print('time ', t)
+        # print('w_hat_norm ', w_hat_norm)
 
         vpar_lower_violation = np.max(self.Vpar_min - vpar_hat)
         vpar_upper_violation = np.max(vpar_hat - self.Vpar_max)
@@ -286,7 +288,7 @@ class CBCProjection(CBCBase):
         prob = self.prob
         prob.solve(
             solver=cp.MOSEK,
-            warm_start=True,
+            warm_start=True
             # eps=0.05,  # SCS convergence tolerance (1e-4)
             # max_iters=300,  # SCS max iterations (2500)
             # abstol=0.1, # ECOS (1e-8) / CVXOPT (1e-7) absolute accuracy
@@ -307,6 +309,7 @@ class CBCProjection(CBCBase):
             self.log.write(f'{indent} CBC slack: {slack_w.value:.3f}')
 
         # check whether constraints are satisfied for latest time step
+        # print('check if the new model is good.')
         satisfied, msg = self._check_newest_obs(t)
         if not satisfied:
             self.log.write(f'{indent} CBC post opt: {msg}')
