@@ -160,6 +160,12 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
     log.write(f'filename: {filename}')
 
     # ==== NONLINEAR MODIFICATIONS ====
+    # Load nonlinear v_par, which is equal to the voltage from nonlinear power flow voltage without control
+    nonlinear_vpar = np.load('nonlinear_voltage_baseline.npy')
+    nonlinear_vpars = (nonlinear_vpar*12.)**2
+    nonlinear_Vpar_min = np.min(nonlinear_vpars, axis=0) -10
+    nonlinear_Vpar_max = np.max(nonlinear_vpars, axis=0) +10
+
     # Create nonlinear voltage simulation environment to be supplied to robust_voltage_control()
     injection_bus = np.array(range(0, 55))
     env = VoltageCtrl_nonlinear(pp_net=net, vmin=v_min, vmax=v_max, v0=v_nom, injection_bus=injection_bus)
@@ -181,13 +187,13 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
     gen_X_set = meta_gen_X_set(norm_bound=norm_bound, X_true=X)
 
     if cbc_alg == 'const':
-        sel = CBCBase(n=n, T=T, X_init=X_init, v=vpars[start],
+        sel = CBCBase(n=n, T=T, X_init=X_init, v=nonlinear_vpars[start],
                       gen_X_set=gen_X_set, X_true=X, log=log)
     elif cbc_alg == 'proj':
         params.update(alpha=alpha, nsamples=nsamples)
         sel = CBCProjection(
             eta=eta, n=n, T=T-start, nsamples=nsamples, alpha=alpha,
-            v=vpars[start], gen_X_set=gen_X_set, Vpar=(Vpar_min, Vpar_max),
+            v=nonlinear_vpars[start], gen_X_set=gen_X_set, Vpar=(nonlinear_Vpar_min, nonlinear_Vpar_max),
             X_init=X_init, X_true=X, log=log, seed=seed)
         save_dict.update(w_inds=sel.w_inds, vpar_inds=sel.vpar_inds)
     elif cbc_alg == 'steiner':
@@ -195,7 +201,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
         params.update(nsamples=nsamples, nsamples_steiner=dim)
         sel = CBCSteiner(
             eta=eta, n=n, T=T-start, nsamples=nsamples, nsamples_steiner=dim,
-            v=vpars[start], gen_X_set=gen_X_set, Vpar=(Vpar_min, Vpar_max),
+            v=nonlinear_vpars[start], gen_X_set=gen_X_set, Vpar=(nonlinear_Vpar_min, nonlinear_Vpar_max),
             X_init=X_init, X_true=X, log=log, seed=seed)
     else:
         raise ValueError('unknown cbc_alg')
@@ -224,7 +230,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
     # plot and save figure
     volt_plot.update(qcs=qcs,
                      vs=np.sqrt(vs),
-                     vpars=np.sqrt(vpars),
+                     vpars=np.sqrt(nonlinear_vpars),
                      dists=(dists['t'], dists['true']))
     volt_plot.fig.savefig(f'{filename}.svg', pad_inches=0, bbox_inches='tight')
     volt_plot.fig.savefig(f'{filename}.pdf', pad_inches=0, bbox_inches='tight')
@@ -246,14 +252,14 @@ def wrap_write_newlines(f: Any) -> Any:
 
 if __name__ == '__main__':
     all_nodes = np.arange(55)
-    exclude = np.array([9, 19, 22, 31, 40, 46, 55]) - 2
+    exclude = [] #np.array([9, 19, 22, 31, 40, 46, 55]) - 2
     obs_nodes = np.setdiff1d(all_nodes, exclude).tolist()
-    for seed in [8,]: #9, 10, 11]:
+    for seed in [8, 9, 10, 11]:
         run(
             epsilon=0.1,
             q_max=0.24,
             cbc_alg='proj',
-            eta= 25, # 8.65,
+            eta= 20, # 8.65,
             norm_bound=1.0,
             norm_bound_init=None,
             noise=1.0,
@@ -263,4 +269,4 @@ if __name__ == '__main__':
             pbar=tqdm(),
             is_interactive=False,
             savedir='out',
-            tag='_partialobs')
+            tag= '_fullobs_linear')# '_partialobs')

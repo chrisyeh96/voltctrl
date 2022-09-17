@@ -9,6 +9,7 @@ import numpy as np
 import pandapower as pp
 import pandapower.topology
 import scipy.io
+import os
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -23,7 +24,7 @@ def create_56bus() -> pp.pandapowerNet:
 
     Returns: pp.pandapowerNet
     """
-    net = pp.converter.from_mpc('data/SCE_56bus.mat', casename_mpc_file='case_mpc')
+    net = pp.converter.from_mpc(os.path.join(os.path.dirname(__file__),'data/SCE_56bus.mat'), casename_mpc_file='case_mpc')
 
     # remove loads and generators at all buses except bus 0 (substation),
     # but keep the network lines
@@ -230,7 +231,7 @@ def read_load_data() -> tuple[np.ndarray, np.ndarray]:
     - p: np.array, shape [T, n], active load in MW, TODO sign
     - q: np.array, shape [T, n], reactive load in MVar, TODO sign
     """
-    mat = scipy.io.loadmat('data/pq_fluc.mat', squeeze_me=True)
+    mat = scipy.io.loadmat(os.path.join(os.path.dirname(__file__),'data/pq_fluc.mat'), squeeze_me=True)
     pq_fluc = mat['pq_fluc']  # shape (55, 2, 14421)
     p = pq_fluc[:, 0]  # active load, shape (55, 14421)
     qe = pq_fluc[:, 1]  # reactive load

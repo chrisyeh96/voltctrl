@@ -11,13 +11,13 @@ from network_utils import np_triangle_norm
 from voltplot import VoltPlot
 import scipy.io as spio
 from random import sample
-
+import os
 
 
 
 # ==== BEGINNING OF NONLINEAR MODIFICATIONS: loading data ====
 # active and reactive load data
-load = spio.loadmat('orig_data/loadavail20150908.mat', squeeze_me=True)
+load = spio.loadmat(os.path.join(os.path.dirname(__file__), 'orig_data/loadavail20150908.mat'), squeeze_me=True)
 scale = 1.1
 load_p = np.stack(load['Load']['kW']) / 1000  # to MW
 load_p *= scale
@@ -32,7 +32,7 @@ N = 55
 gen_p = np.zeros((N, T))
 gen_q = np.zeros((N, T))
 
-solar_orig = spio.loadmat('orig_data/pvavail20150908_2.mat', squeeze_me=True)
+solar_orig = spio.loadmat(os.path.join(os.path.dirname(__file__),'orig_data/pvavail20150908_2.mat'), squeeze_me=True)
 capacities = np.array([
     9.97, 11.36, 13.53, 6.349206814, 106.142148, 154, 600, 293.54, 66.045,
     121.588489, 12.94935415, 19.35015173, 100, 31.17327501, 13.06234596,
@@ -50,8 +50,8 @@ solar_index = np.array([9,12,14,16,19,10,11,13,15,7,2,4,20,23,25,26,32,8]) - 2
 gen_p[solar_index,:] = pv
 
 # Check data
-solar = spio.loadmat('data/PV.mat', squeeze_me=True)['actual_PV_profile']  # shape [14421]
-pq_fluc = spio.loadmat('data/pq_fluc.mat', squeeze_me=True)['pq_fluc']  # shape [55, 2, 14421]
+solar = spio.loadmat(os.path.join(os.path.dirname(__file__),'data/PV.mat'), squeeze_me=True)['actual_PV_profile']  # shape [14421]
+pq_fluc = spio.loadmat(os.path.join(os.path.dirname(__file__),'data/pq_fluc.mat'), squeeze_me=True)['pq_fluc']  # shape [55, 2, 14421]
 all_p = pq_fluc[:, 0]  # shape [n, T]
 all_q = pq_fluc[:, 1]  # shape [n, T]
 nodal_injection = -load_p + gen_p
@@ -132,8 +132,11 @@ def robust_voltage_control(
 
     vs = sel.v  # shape [T, n], vs[t] denotes v(t)
     qcs = sel.q  # shape [T, n], qcs[t] denotes q^c(t)
-    vpars = qe @ X + p @ R + v_sub  # shape [T, n], vpars[t] denotes vpar(t)
-    assert np.array_equal(vs[0], vpars[0])
+    # vpars = qe @ X + p @ R + v_sub  # shape [T, n], vpars[t] denotes vpar(t)
+    # assert np.array_equal(vs[0], vpars[0])
+    nonlinear_vpars = np.load('nonlinear_voltage_baseline.npy') ## nonlinear modification
+    nonlinear_vpars = (nonlinear_vpars*12.)**2
+    assert np.array_equal(vs[0], nonlinear_vpars[0])
 
     # we need to use `u` as the variable instead of `qc_next` in order to
     # make the problem DPP-convex
@@ -178,9 +181,14 @@ def robust_voltage_control(
             # X̂_prev = np.array(X̂.value)  # save a copy
             # etahat_prev = float(eta.value)  # save a copy
         else:
-            X̂.value = sel.select(t)
+            # X̂.value = sel.select(t) 
+            X̂.value = X
+            satisfied, msg = sel._check_newest_obs(t, X)
+            if not satisfied:
+                print(msg)
+                log.write(f't={t} linear X does not satisfy the nonlinear constraints: {msg}')
             update_dists(dists, t, X̂.value, X̂_prev, X, log=log)
-            X̂_prev = np.array(X̂.value)  # save a copy
+            X̂_prev = np.array(X̂.value)  # save a copy``
         qct.value = qcs[t]
         vt.value = vs[t]
 
@@ -213,7 +221,7 @@ def robust_voltage_control(
         if volt_plot is not None and (t+1) % volt_plot_update == 0:
             volt_plot.update(qcs=qcs[:t+2],
                              vs=np.sqrt(vs[:t+2]),
-                             vpars=np.sqrt(vpars[:t+2]),
+                             vpars=np.sqrt(nonlinear_vpars[:t+2]),
                              dists=(dists['t'], dists['true']))
             volt_plot.show(clear_display=False)
 
@@ -224,7 +232,7 @@ def robust_voltage_control(
 
     # update voltplot at the end of run
     if volt_plot is not None:
-        volt_plot.update(qcs=qcs, vs=np.sqrt(vs), vpars=np.sqrt(vpars),
+        volt_plot.update(qcs=qcs, vs=np.sqrt(vs), vpars=np.sqrt(nonlinear_vpars),
                          dists=(dists['t'], dists['true']))
         volt_plot.show(clear_display=False)
 
