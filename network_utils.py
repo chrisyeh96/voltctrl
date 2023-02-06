@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import MutableMapping, MutableSet, Sequence
 from typing import TypeVar
 import warnings
 
@@ -10,7 +10,7 @@ import pandapower as pp
 import pandapower.topology
 import scipy.io
 
-warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings('ignore', category=FutureWarning)
 
 T = TypeVar('T')
 
@@ -23,12 +23,14 @@ def create_56bus() -> pp.pandapowerNet:
 
     Returns: pp.pandapowerNet
     """
-    net = pp.converter.from_mpc('data/SCE_56bus.mat', casename_mpc_file='case_mpc')
+    net = pp.converter.from_mpc(
+        'data/SCE_56bus.mat', casename_mpc_file='case_mpc')
 
     # remove loads and generators at all buses except bus 0 (substation),
     # but keep the network lines
     buses = list(range(1, 56))
-    pp.drop_elements_at_buses(net, buses=buses, bus_elements=True, branch_elements=False)
+    pp.drop_elements_at_buses(
+        net, buses=buses, bus_elements=True, branch_elements=False)
 
     for i in buses:
         pp.create_load(net, bus=i, p_mw=0, q_mvar=0)
@@ -37,15 +39,16 @@ def create_56bus() -> pp.pandapowerNet:
     return net
 
 
-def create_RX_from_net(net: pp.pandapowerNet, noise: float = 0, modify: str | None = None,
-                       seed: int | None = 123, check_pd: bool = True
+def create_RX_from_net(net: pp.pandapowerNet, noise: float = 0,
+                       modify: str | None = None, seed: int | None = 123,
+                       check_pd: bool = True
                        ) -> tuple[np.ndarray, np.ndarray]:
     """Creates R,X matrices from a pandapowerNet.
 
     Args
     - net: pandapowerNet with (n+1) buses including substation
-    - noise: float, optional uniform noise to add to impedances, values in [0,1]
-    - modify: str, how to modify the network, one of [None, 'perm', 'linear', 'rand']
+    - noise: float, optional add uniform noise to impedances, values in [0,1]
+    - modify: str, how to modify network, one of [None, 'perm', 'linear', 'rand']
     - seed: int, for generating the uniform noise
 
     Returns: tuple (X, R)
@@ -109,7 +112,8 @@ def create_RX_from_net(net: pp.pandapowerNet, noise: float = 0, modify: str | No
     return R, X
 
 
-def get_intersecting_path(path1: Sequence[T], path2: Sequence[T]) -> list[tuple[T, T]]:
+def get_intersecting_path(path1: Sequence[T], path2: Sequence[T]
+                          ) -> list[tuple[T, T]]:
     """Gets the intersection between two paths. Assumes that the paths only
     intersect in the beginning.
 
@@ -268,10 +272,10 @@ def calc_max_norm_w(R: np.ndarray, X: np.ndarray, p: np.ndarray, qe: np.ndarray
     """Calculates ||w||_∞.
 
     Args
-    - R: shape [n, n]
-    - X: shape [n, n]
-    - p: shape [n, T], active power injection
-    - qe: shape [n, T], exogenous reactive power injection
+    - R: np.array, shape [n, n]
+    - X: np.array, shape [n, n]
+    - p: np.array, shape [n, T], active power injection
+    - qe: np.array, shape [n, T], exogenous reactive power injection
 
     Returns: norms, dict maps keys ['w', 'wp', 'wq'] to np.ndarray of shape [T]
     """
@@ -279,7 +283,7 @@ def calc_max_norm_w(R: np.ndarray, X: np.ndarray, p: np.ndarray, qe: np.ndarray
     wq = X @ (qe[:, 1:] - qe[:, :-1])
     w = wp + wq
     norms = {
-        'w':  np.linalg.norm( w, ord=np.inf, axis=0),
+        'w':  np.linalg.norm( w, ord=np.inf, axis=0),  # noqa
         'wp': np.linalg.norm(wp, ord=np.inf, axis=0),
         'wq': np.linalg.norm(wq, ord=np.inf, axis=0)
     }
@@ -293,3 +297,80 @@ def calc_max_norm_w(R: np.ndarray, X: np.ndarray, p: np.ndarray, qe: np.ndarray
 def np_triangle_norm(x: np.ndarray) -> float:
     """Computes ||X||_△"""
     return np.linalg.norm(np.triu(x), ord='fro')
+
+
+def X_to_ancestors(X: np.ndarray) -> dict[int, set[int]]:
+    """Constructs ancestor map from X matrix.
+
+    Args
+    - X: np.ndarray, shape [n, n]
+
+    Returns: set, maps each node to a set of ancestors
+    """
+    # work with a copy of X
+    Xcp = X.copy()
+
+    # get a list of bins, centered at values along diag(X)
+    centers = np.sort(np.diag(X))
+    bins = [0]
+    bins.extend((centers[:-1] + centers[1:]) / 2)
+
+    # bin the values of X, then replace with bin center
+    inds = np.digitize(X, bins) - 1  # digitize returns 1-indexed bin indices
+    Xcp = centers[inds.flatten()].reshape(X.shape)
+
+    # create a mapping from nodes => set of ancestors
+    # - every node has the substation (node: -1) as an ancestor
+    ancestors = {i: {-1} for i in range(X.shape[0])}
+
+    for i in range(X.shape[0]):
+        for j in range(i+1, X.shape[1]):
+            if Xcp[i, j] == 0:
+                # i,j don't share any parent, except for substation
+                pass
+            elif Xcp[i, j] == X[i, i]:
+                # j is a descendant of i
+                ancestors[j].add(i)
+            elif Xcp[i, j] == X[j, j]:
+                # i is a descendant of j
+                ancestors[i].add(j)
+            else:
+                # i,j share a common ancestor k
+                k = int(np.argmin(np.abs(Xcp[i, j] - np.diag(X))))
+                assert Xcp[i, j] == X[k, k]
+                ancestors[i].add(k)
+                ancestors[j].add(k)
+
+    return ancestors
+
+
+def build_tree_from_ancestors(ancestors: MutableMapping[int, MutableSet[int]]
+                              ) -> nx.Graph:
+    """Builds tree from ancestors mapping.
+
+    Args
+    - ancestors: set, maps each node to a set of ancestors, gets modified
+
+    Returns: nx.Graph, tree structure
+    """
+    G = nx.Graph()
+    while len(ancestors) > 0:
+        N = len(ancestors)
+
+        # find all nodes with only 1 ancestor
+        parents = set()
+        children = set()
+        for n in ancestors:
+            if len(ancestors[n]) == 1:
+                parent = ancestors[n].pop()
+                parents.add(parent)
+                children.add(n)
+                G.add_edge(parent, n)
+
+        for n in children:
+            del ancestors[n]
+        assert len(ancestors) < N, 'Invalid ancestors map'
+
+        for n in ancestors:
+            ancestors[n] -= parents
+    return G
