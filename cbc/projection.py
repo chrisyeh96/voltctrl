@@ -259,7 +259,7 @@ class CBCProjection(CBCBase):
             #     rng.choice(t-k, size=self.nsamples-k, replace=False)])
 
             for i, b in enumerate(['lb', 'ub']):
-                w_inds = self.w_inds[i].nonzero()[0]
+                w_inds = self.w_inds[i, :t].nonzero()[0]
                 ts = np.concatenate([
                     w_inds[-k:],
                     self.rng.choice(len(w_inds) - k, size=self.nsamples-k, replace=False)
@@ -267,7 +267,7 @@ class CBCProjection(CBCBase):
                 self.param[f'delta_vs_{b}'].value = self.delta_v[ts]
                 self.param[f'us_{b}'].value = self.u[ts]
 
-                vpar_inds = self.vpar_inds[i].nonzero()[0]
+                vpar_inds = self.vpar_inds[i, :t].nonzero()[0]
                 ts = np.concatenate([
                     vpar_inds[-k:],
                     self.rng.choice(len(vpar_inds) - k, size=self.nsamples-k, replace=False)

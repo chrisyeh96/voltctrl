@@ -50,6 +50,7 @@ def create_RX_from_net(net: pp.pandapowerNet, noise: float = 0,
     - noise: float, optional add uniform noise to impedances, values in [0,1]
     - modify: str, how to modify network, one of [None, 'perm', 'linear', 'rand']
     - seed: int, for generating the uniform noise
+    - check_pd: bool, whether to assert that returned R,X are PD
 
     Returns: tuple (X, R)
     - X: np.array, shape [n, n], positive definite and entry-wise positive
@@ -176,6 +177,7 @@ def create_RX_from_rx(r: np.ndarray, x: np.ndarray, G: nx.Graph,
     - r: np.array, shape [n+1, n+1], symmetric and entry-wise positive
     - x: np.array, shape [n+1, n+1], symmetric and entry-wise positive
     - G: nx.Graph, undirected graph, nodes are numbered {0, ..., n}
+    - check_pd: bool, whether to assert that returned R,X are PD
 
     Returns: tuple (X, R)
     - X: np.array, shape [n, n], positive definite and entry-wise positive

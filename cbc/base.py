@@ -66,7 +66,7 @@ class CBCBase:
     We assume that q^c(0) = 0, and that v(0) is given.
 
     Usage:
-        sel = CBCBase(n,T,X_init,v,...)  # initialize
+        sel = CBCBase(n, T, X_init, v, ...)  # initialize
         for t in range(T-1):
             Xhat = sel.select(t)
             q_next = get_control_action(Xhat, ...)
