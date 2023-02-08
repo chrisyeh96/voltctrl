@@ -98,6 +98,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
         X_init is sampled
     - noise: float, network impedances modified by fraction Uniform(±noise)
     - modify: str, how to modify network, one of [None, 'perm', 'linear', 'rand']
+    - obs_nodes: list of int, nodes that we can observe voltages for
     - nsamples: int, # of samples to use for computing consistent set,
         only used when cbc_alg is 'proj' or 'steiner'
     - seed: int, random seed
@@ -180,13 +181,13 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
 
     if cbc_alg == 'const':
         sel = CBCBase(n=n, T=T, X_init=X_init, v=vpars[start],
-                      gen_X_set=gen_X_set, X_true=X, log=log)
+                      gen_X_set=gen_X_set, X_true=X, obs_nodes=obs_nodes, log=log)
     elif cbc_alg == 'proj':
         params.update(alpha=alpha, nsamples=nsamples)
         sel = CBCProjection(
             eta=eta, n=n, T=T-start, nsamples=nsamples, alpha=alpha,
             v=vpars[start], gen_X_set=gen_X_set, Vpar=(Vpar_min, Vpar_max),
-            X_init=X_init, X_true=X, log=log, seed=seed)
+            X_init=X_init, X_true=X, obs_nodes=obs_nodes, log=log, seed=seed)
         save_dict.update(w_inds=sel.w_inds, vpar_inds=sel.vpar_inds)
     elif cbc_alg == 'steiner':
         dim = n * (n+1) // 2
@@ -194,7 +195,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
         sel = CBCSteiner(
             eta=eta, n=n, T=T-start, nsamples=nsamples, nsamples_steiner=dim,
             v=vpars[start], gen_X_set=gen_X_set, Vpar=(Vpar_min, Vpar_max),
-            X_init=X_init, X_true=X, log=log, seed=seed)
+            X_init=X_init, X_true=X, obs_nodes=obs_nodes, log=log, seed=seed)
     else:
         raise ValueError('unknown cbc_alg')
 

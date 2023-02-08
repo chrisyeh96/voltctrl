@@ -1,7 +1,7 @@
 """Convex body chasing via Steiner point."""
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 import io
 
 import cvxpy as cp
@@ -22,7 +22,7 @@ class CBCSteiner(CBCBase):
                  gen_X_set: Callable[[cp.Variable], list[Constraint]],
                  eta: float, nsamples: int, nsamples_steiner: int, # alpha: float,
                  Vpar: tuple[np.ndarray, np.ndarray],
-                 X_true: np.ndarray,
+                 X_true: np.ndarray, obs_nodes: Sequence[int] | None = None,
                  log: tqdm | io.TextIOBase | None = None, seed: int = 123):
         """
         Args
