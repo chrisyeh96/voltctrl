@@ -20,7 +20,8 @@ def robust_voltage_control(
         sel: Any, pbar: tqdm | None = None,
         log: tqdm | io.TextIOBase | None = None,
         volt_plot: VoltPlot | None = None, volt_plot_update: int = 100,
-        ) -> tuple[np.ndarray, np.ndarray, dict[str, list]]:
+        save_Xhat_every: int = 100
+        ) -> tuple[np.ndarray, np.ndarray, dict[str, list], dict[int, np.ndarray]]:
     """Runs robust voltage control.
 
     Args
@@ -44,6 +45,7 @@ def robust_voltage_control(
     - pbar: optional tqdm, progress bar
     - volt_plot: VoltPlot
     - volt_plot_update: int, time steps between updating volt_plot
+    - save_Xhat_every: int, time steps between saving estiamted Xhat model
 
     Returns
     - vs: np.array, shape [T, n]
@@ -54,6 +56,8 @@ def robust_voltage_control(
             v(t), q^c(t), u(t-1)
         - 'true': list of float, ||X̂-X||_△ after each model update
         - 'prev': list of float, ||X̂(t)-X̂(t-1)||_△ after each model update
+    - X_hats: dict, keys are time steps, values are np.array, shape [n, n]
+        - X_hats[t] is the estimated model after observing vs[t], qcs[t]
     """
     assert p.shape == qe.shape
     T, n = qe.shape
@@ -118,6 +122,7 @@ def robust_voltage_control(
         log.write('pbar present')
         pbar.reset(total=T-1)
 
+    X_hats = {}
     for t in range(T-1):  # t = 0, ..., T-2
         # fill in Parameters
         if is_learning_eta:
@@ -130,6 +135,10 @@ def robust_voltage_control(
             X̂.value = sel.select(t)
             update_dists(dists, t, X̂.value, X̂_prev, X, log=log)
             X̂_prev = np.array(X̂.value)  # save a copy
+
+            if (t+1) % save_Xhat_every == 0:
+                X_hats[t] = np.array(X̂.value)  # save a copy
+
         qct.value = qcs[t]
         vt.value = vs[t]
 
@@ -167,7 +176,7 @@ def robust_voltage_control(
                          dists=(dists['t'], dists['true']))
         volt_plot.show(clear_display=False)
 
-    return vs, qcs, dists
+    return vs, qcs, dists, X_hats
 
 
 def update_dists(dists: dict[str, list], t: int, Xhat: np.ndarray,

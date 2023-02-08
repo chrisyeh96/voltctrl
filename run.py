@@ -52,9 +52,14 @@ def meta_gen_X_set(norm_bound: float, X_true: np.ndarray
         """Returns constraints describing 𝒳, the uncertainty set for X.
 
         Constraints:
-        - var_X is PSD (enforced at cp.Variable intialization)
-        - var_X is entry-wise nonnegative
-        - ||var_X - X*|| <= c * ||X*||
+        (1) var_X is PSD (enforced at cp.Variable intialization)
+        (2) var_X is entry-wise nonnegative
+        (3) largest entry in each row/col of var_X is on the diagonal
+        (4) ||var_X - X*|| <= c * ||X*||
+
+        Note: Constraint (1) does NOT automatically imply (3). See, e.g.,
+            https://math.stackexchange.com/a/3331028. Also related:
+            https://math.stackexchange.com/a/1382954.
 
         Args
         - var_X: cp.Variable, should already be constrainted to be PSD
@@ -64,8 +69,11 @@ def meta_gen_X_set(norm_bound: float, X_true: np.ndarray
         assert var_X.is_psd(), 'variable for X was not PSD-constrained'
         norm_sq_diff = cp_triangle_norm_sq(var_X - X_true)
         norm_X = np_triangle_norm(X_true)
-        𝒳 = [var_X >= 0,  # entry-wise nonneg
-             norm_sq_diff <= (norm_bound * norm_X)**2]
+        𝒳 = [
+            var_X >= 0,  # entry-wise nonneg
+            var_X <= cp.diag(var_X)[:, None],  # diag has largest entry per row/col
+            norm_sq_diff <= (norm_bound * norm_X)**2
+        ]
         tqdm.write('𝒳 = {X: ||X̂-X||_△ <= ' + f'{norm_bound * norm_X}' + '}')
         return 𝒳
     return gen_𝒳
@@ -194,7 +202,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
         v_lims=(np.sqrt(v_min), np.sqrt(v_max)),
         q_lims=(-q_max, q_max))
 
-    vs, qcs, dists = robust_voltage_control(
+    vs, qcs, dists, X_hats = robust_voltage_control(
         p=p[start:T], qe=qe[start:T],
         v_lims=(v_min, v_max), q_lims=(-q_max, q_max), v_nom=v_nom,
         X=X, R=R, Pv=Pv * np.eye(n), Pu=Pu * np.eye(n),
@@ -207,7 +215,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
     # save data
     with open(f'{filename}.pkl', 'wb') as f:
         pickle.dump(file=f, obj=dict(
-            vs=vs, qcs=qcs, dists=dists, params=params,
+            vs=vs, qcs=qcs, dists=dists, X_hats=X_hats, params=params,
             elapsed=elapsed, **save_dict))
     # np.savez_compressed(f'{filename}.npz', vs=vs, qcs=qcs, dists=dists, **save_dict)
 
