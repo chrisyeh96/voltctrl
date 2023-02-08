@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import MutableMapping, MutableSet, Sequence
+import copy
 from typing import TypeVar
 import warnings
 
@@ -301,49 +302,93 @@ def np_triangle_norm(x: np.ndarray) -> float:
     return np.linalg.norm(np.triu(x), ord='fro')
 
 
-def X_to_ancestors(X: np.ndarray) -> dict[int, set[int]]:
+def X_to_ancestors(X: np.ndarray) -> tuple[dict[int, set[int]], np.ndarray]:
     """Constructs ancestor map from X matrix.
 
     Args
-    - X: np.ndarray, shape [n, n]
+    - X: np.ndarray, shape [n, n], satisfies constraints:
+        - PSD, elementwise >= 0, diagonal entries are largest in each row/col
 
     Returns: set, maps each node to a set of ancestors
     """
-    # work with a copy of X
-    Xcp = X.copy()
+    n = X.shape[0]
 
     # get a list of bins, centered at values along diag(X)
-    centers = np.sort(np.diag(X))
-    bins = [0]
-    bins.extend((centers[:-1] + centers[1:]) / 2)
+    centers = np.concatenate([[0], np.sort(np.diag(X))])
+    bins = [0] + list((centers[:-1] + centers[1:]) / 2)
 
     # bin the values of X, then replace with bin center
     inds = np.digitize(X, bins) - 1  # digitize returns 1-indexed bin indices
-    Xcp = centers[inds.flatten()].reshape(X.shape)
+    X = centers[inds.flatten()].reshape(X.shape)
 
     # create a mapping from nodes => set of ancestors
     # - every node has the substation (node: -1) as an ancestor
-    ancestors = {i: {-1} for i in range(X.shape[0])}
+    ancestors = {i: {-1} for i in range(n)}
 
-    for i in range(X.shape[0]):
-        for j in range(i+1, X.shape[1]):
-            if Xcp[i, j] == 0:
-                # i,j don't share any parent, except for substation
+    for i in range(n):
+        for j in range(i+1, n):
+            if X[i, j] == 0:
+                # only common ancestor is the substation
                 pass
-            elif Xcp[i, j] == X[i, i]:
+
+            elif X[i, j] == X[i, i]:
                 # j is a descendant of i
                 ancestors[j].add(i)
-            elif Xcp[i, j] == X[j, j]:
+
+                # ensure that descendants d of j have X_{id} == X_{ii}
+                for d in range(n):
+                    if X[j, d] == X[j, j]:
+                        X[i, d] = X[i, i]
+                        X[d, i] = X[i, i]
+
+            elif X[i, j] == X[j, j]:
                 # i is a descendant of j
                 ancestors[i].add(j)
+
+                # ensure that descendants d of i have X_{jd} == X_{jj}
+                for d in range(n):
+                    if X[i, d] == X[i, i]:
+                        X[j, d] = X[j, j]
+                        X[d, j] = X[j, j]
+
             else:
-                # i,j share a common ancestor k
-                k = int(np.argmin(np.abs(Xcp[i, j] - np.diag(X))))
-                assert Xcp[i, j] == X[k, k]
+                # i,j share a common ancestor k (other than the substation)
+
+                k = int(np.argmin(np.abs(X[i, j] - np.diag(X))))
+                assert X[i, j] == X[k, k]
                 ancestors[i].add(k)
                 ancestors[j].add(k)
 
-    return ancestors
+                X[j, k] = X[k, j] = X[k, k]
+
+                # ensure that descendants di of i and dj of j have X[di, dj] = shared
+                # for di in range(n):
+                #     if X[i, di] == X[i, i]:
+                #         for dj in range(n):
+                #             if X[j, dj] == X[j, j]:
+                #                 X[di, dj] = shared
+                #                 X[dj, di] = shared
+
+    return ancestors, X
+
+def check_ancestors_completeness(ancestors):
+    # complete = {}
+    # for n in ancestors:
+    #     done = set()
+    #     queue = ancestors[n]
+    #     while len(queue) > 0:
+    #         a = queue.pop()
+    #         done.add(a)
+    #         if a in complete:
+    #             done |= complete[a]
+    #         elif a != -1:
+    #             queue |= (ancestors[a] - done)
+    #     complete[n] = done
+
+    for n in ancestors:
+        for a in ancestors[n]:
+            if a != -1:
+                assert ancestors[a] <= ancestors[n]
 
 
 def build_tree_from_ancestors(ancestors: MutableMapping[int, MutableSet[int]]
@@ -351,28 +396,35 @@ def build_tree_from_ancestors(ancestors: MutableMapping[int, MutableSet[int]]
     """Builds tree from ancestors mapping.
 
     Args
-    - ancestors: set, maps each node to a set of ancestors, gets modified
+    - ancestors: set, maps each node to a set of ancestors
+
+    Notes:
+    - Assumes that ancestors mapping forms a DAG instead of a tree. To create
+        a tree from a DAG, each child node randomly picks one of its parents
+        to be its single parent.
+    - See https://cs.stackexchange.com/q/23408
 
     Returns: nx.Graph, tree structure
     """
+    ancestors = copy.deepcopy(ancestors)
     G = nx.Graph()
     while len(ancestors) > 0:
-        N = len(ancestors)
-
         # find all nodes with only 1 ancestor
-        parents = set()
         children = set()
+        remaining = set(ancestors.keys())
         for n in ancestors:
-            if len(ancestors[n]) == 1:
-                parent = ancestors[n].pop()
-                parents.add(parent)
+            if len(ancestors[n]) == 1 or ancestors[n].isdisjoint(remaining):
+                parent = next(iter(ancestors[n]))  # choose a parent at random
                 children.add(n)
                 G.add_edge(parent, n)
 
-        for n in children:
-            del ancestors[n]
-        assert len(ancestors) < N, 'Invalid ancestors map'
+        if len(children) == 0:
+            raise ValueError('Invalid ancestors map')
 
         for n in ancestors:
-            ancestors[n] -= parents
+            for c in children:
+                if c in ancestors[n]:
+                    ancestors[n] -= ancestors[c]
+        for c in children:
+            del ancestors[c]
     return G
