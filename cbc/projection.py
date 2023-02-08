@@ -146,10 +146,6 @@ class CBCProjection(CBCBase):
         """
         Args
         - t: int, current time step (>=1), v[t] and q[t] have just been updated
-
-        Args
-        - v: np.array, v(t+1) = v(t) + X @ u(t) = X @ q^c(t+1) + vpar(t+1)
-        - u: np.array, u(t) = q^c(t+1) - q^c(t)
         """
         # update self.u and self.delta_v
         super().add_obs(t)
@@ -267,7 +263,7 @@ class CBCProjection(CBCBase):
                 self.param[f'delta_vs_{b}'].value = self.delta_v[ts]
                 self.param[f'us_{b}'].value = self.u[ts]
 
-                vpar_inds = self.vpar_inds[i, :t].nonzero()[0]
+                vpar_inds = self.vpar_inds[i, :t+1].nonzero()[0]
                 ts = np.concatenate([
                     vpar_inds[-k:],
                     self.rng.choice(len(vpar_inds) - k, size=self.nsamples-k, replace=False)
