@@ -23,6 +23,7 @@ from robust_voltage_control_nonlinear import (
     VoltPlot,
     robust_voltage_control)
 from nonlinear_simulation import (VoltageCtrl_nonlinear)
+import matplotlib.pyplot as plt
 
 
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -194,7 +195,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
         sel = CBCProjection(
             eta=eta, n=n, T=T-start, nsamples=nsamples, alpha=alpha,
             v=nonlinear_vpars[start], gen_X_set=gen_X_set, Vpar=(nonlinear_Vpar_min, nonlinear_Vpar_max),
-            X_init=X_init, X_true=X, log=log, seed=seed)
+            X_init=X_init, X_true=X, log=log, seed=seed) #TODO: change back X_init to X_init instead of X(true)!
         save_dict.update(w_inds=sel.w_inds, vpar_inds=sel.vpar_inds)
     elif cbc_alg == 'steiner':
         dim = n * (n+1) // 2
@@ -210,7 +211,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
         v_lims=(np.sqrt(v_min), np.sqrt(v_max)),
         q_lims=(-q_max, q_max))
 
-    vs, qcs, dists = robust_voltage_control(
+    vs, qcs, dists, check_prediction = robust_voltage_control(
         p=p[start:T], qe=qe[start:T],
         v_lims=(v_min, v_max), q_lims=(-q_max, q_max), v_nom=v_nom,
         env=env, X=X, R=R, Pv=Pv * np.eye(n), Pu=Pu * np.eye(n),
@@ -223,7 +224,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
     # save data
     with open(f'{filename}.pkl', 'wb') as f:
         pickle.dump(file=f, obj=dict(
-            vs=vs, qcs=qcs, dists=dists, params=params,
+            vs=vs, qcs=qcs, dists=dists, params=params, pred_error=check_prediction,
             elapsed=elapsed, **save_dict))
     # np.savez_compressed(f'{filename}.npz', vs=vs, qcs=qcs, dists=dists, **save_dict)
 
@@ -234,6 +235,17 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
                      dists=(dists['t'], dists['true']))
     volt_plot.fig.savefig(f'{filename}.svg', pad_inches=0, bbox_inches='tight')
     volt_plot.fig.savefig(f'{filename}.pdf', pad_inches=0, bbox_inches='tight')
+
+    # plot and save voltage prediction error for proposed algorithm and fixed linearization
+    # fig, ax = plt.subplots()
+    # for name in check_prediction:
+    #     ax.plot(np.arange(len(check_prediction[name])), np.cumsum(np.array(check_prediction[name])), label=name)
+    # ax.legend()
+    # fig.savefig(f'{filename}_prediction.png')
+    # fig.show()
+
+
+
 
     if not is_interactive:
         log.close()
@@ -252,9 +264,9 @@ def wrap_write_newlines(f: Any) -> Any:
 
 if __name__ == '__main__':
     all_nodes = np.arange(55)
-    exclude = [] #np.array([9, 19, 22, 31, 40, 46, 55]) - 2
+    exclude = np.array([9, 19, 22, 31, 40, 46, 55]) - 2
     obs_nodes = np.setdiff1d(all_nodes, exclude).tolist()
-    for seed in [8, 9, 10, 11]:
+    for seed in [11,]:#[99, 7, 10, 11]:
         run(
             epsilon=0.1,
             q_max=0.24,
@@ -269,4 +281,4 @@ if __name__ == '__main__':
             pbar=tqdm(),
             is_interactive=False,
             savedir='out',
-            tag= '_fullobs_linear')# '_partialobs')
+            tag= '_partialobs_fixed')# '_partialobs')

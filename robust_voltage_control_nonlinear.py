@@ -72,7 +72,7 @@ def robust_voltage_control(
         sel: Any, pbar: tqdm | None = None,
         log: tqdm | io.TextIOBase | None = None,
         volt_plot: VoltPlot | None = None, volt_plot_update: int = 100,
-) -> tuple[np.ndarray, np.ndarray, dict[str, list]]:
+) -> tuple[np.ndarray, np.ndarray, dict[str, list], dict[str, list]]:
     """Runs robust voltage control.
 
     Args
@@ -84,6 +84,8 @@ def robust_voltage_control(
         - q_min, q_max could be floats, or np.arrays of shape [n]
     - v_nom: float or np.array of shape [n], desired nominal voltage
     - env: gym environment, the nonlinear voltage simulation environment
+    - X: true linearized parameter X
+    - R: true linearized parameter R
     - Pv: np.array, shape [n, n], quadratic (PSD) cost matrix for voltage
     - Pu: np.array, shape [n, n], quadratic (PSD) cost matrix for control
     - eta: float, noise bound (kV^2)
@@ -115,6 +117,7 @@ def robust_voltage_control(
     log.write(f'||X||_△ = {np_triangle_norm(X):.2f}')
 
     dists: dict[str, list] = {'t': [], 'true': [], 'prev': []}
+    check_prediction: dict[str, list] = {'adaptive_linear':[], 'fixed_optimal_linear':[]}
     X̂_prev = None
 
     v_min, v_max = v_lims
@@ -181,11 +184,11 @@ def robust_voltage_control(
             # X̂_prev = np.array(X̂.value)  # save a copy
             # etahat_prev = float(eta.value)  # save a copy
         else:
-            # X̂.value = sel.select(t) 
+            # X̂.value = sel.select(t) ##TODO: change back to adaptive algorithm!
             X̂.value = X
             satisfied, msg = sel._check_newest_obs(t, X)
             if not satisfied:
-                print(msg)
+                # print(msg)
                 log.write(f't={t} linear X does not satisfy the nonlinear constraints: {msg}')
             update_dists(dists, t, X̂.value, X̂_prev, X, log=log)
             X̂_prev = np.array(X̂.value)  # save a copy``
@@ -212,6 +215,10 @@ def robust_voltage_control(
         vs[t+1], _, _ = env.step_load_solar((qc_next.value), load_p[:,t], load_q[:,t],
                                                        gen_p[:,t], gen_q[:,t])
         vs[t+1] = (12. * vs[t+1])**2
+        check_prediction['fixed_optimal_linear'].append(np.linalg.norm(vs[t+1]-(nonlinear_vpars[t+1] + (
+            qc_next.value) @ X)))
+        check_prediction['adaptive_linear'].append(np.linalg.norm(vs[t+1]-(nonlinear_vpars[t+1] + (qc_next.value) @
+                                                                  X̂.value)))
         # print('nonlinear: ', np.linalg.norm(vs[t+1]))
         # ==== END OF NONLINEAR MODIFICATIONS ====
 
@@ -236,7 +243,7 @@ def robust_voltage_control(
                          dists=(dists['t'], dists['true']))
         volt_plot.show(clear_display=False)
 
-    return vs, qcs, dists
+    return vs, qcs, dists, check_prediction
 
 
 def update_dists(dists: dict[str, list], t: int, Xhat: np.ndarray,
