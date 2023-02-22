@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 import io
 from typing import Any
 
@@ -18,6 +19,7 @@ def robust_voltage_control(
         Pv: np.ndarray, Pu: np.ndarray,
         eta: float | None, eps: float, v_sub: float, beta: float,
         sel: Any, pbar: tqdm | None = None,
+        ctrl_nodes: Sequence[int] | None = None,
         log: tqdm | io.TextIOBase | None = None,
         volt_plot: VoltPlot | None = None, volt_plot_update: int = 100,
         save_Xhat_every: int = 100
@@ -42,6 +44,7 @@ def robust_voltage_control(
     - eps: float, robustness buffer (kV^2)
     - v_sub: float, fixed squared voltage magnitude at substation (kV^2)
     - sel: nested convex body chasing object (e.g., CBCProjection)
+    - ctrl_nodes: list of int, nodes that we can control voltages for
     - pbar: optional tqdm, progress bar
     - volt_plot: VoltPlot
     - volt_plot_update: int, time steps between updating volt_plot
@@ -111,6 +114,10 @@ def robust_voltage_control(
         q_min <= qc_next, qc_next <= q_max,
         v_min + k - slack <= v_next, v_next <= v_max - k + slack
     ]
+    if ctrl_nodes is not None:
+        all_nodes = np.arange(n)
+        unctrl_nodes = np.setdiff1d(all_nodes, ctrl_nodes).tolist()
+        constraints.append(u[unctrl_nodes] == 0)
     prob = cp.Problem(objective=obj, constraints=constraints)
 
     # if cp.Problem is DPP, then it can be compiled for speedup

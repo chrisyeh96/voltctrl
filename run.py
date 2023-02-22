@@ -83,6 +83,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
         norm_bound: float, norm_bound_init: float | None = None,
         noise: float = 0, modify: str | None = None,
         obs_nodes: Sequence[int] | None = None,
+        ctrl_nodes: Sequence[int] | None = None,
         nsamples: int = 100, seed: int = 123,
         is_interactive: bool = False, savedir: str = '',
         pbar: tqdm | None = None,
@@ -99,6 +100,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
     - noise: float, network impedances modified by fraction Uniform(±noise)
     - modify: str, how to modify network, one of [None, 'perm', 'linear', 'rand']
     - obs_nodes: list of int, nodes that we can observe voltages for
+    - ctrl_nodes: list of int, nodes that we can control voltages for
     - nsamples: int, # of samples to use for computing consistent set,
         only used when cbc_alg is 'proj' or 'steiner'
     - seed: int, random seed
@@ -116,7 +118,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
 
     params: dict[str, Any] = dict(
         cbc_alg=cbc_alg, q_max=q_max, epsilon=epsilon, eta=eta,
-        obs_nodes=obs_nodes)
+        obs_nodes=obs_nodes, ctrl_nodes=ctrl_nodes)
     filename = os.path.join(savedir, f'CBC{cbc_alg}')
 
     # read in data
@@ -208,7 +210,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
         v_lims=(v_min, v_max), q_lims=(-q_max, q_max), v_nom=v_nom,
         X=X, R=R, Pv=Pv * np.eye(n), Pu=Pu * np.eye(n),
         eta=eta, eps=epsilon, v_sub=v_sub, beta=beta, sel=sel,
-        pbar=pbar, log=log,
+        ctrl_nodes=ctrl_nodes, pbar=pbar, log=log,
         volt_plot=volt_plot if is_interactive else None)
 
     elapsed = (dt.datetime.now(tz) - start_time).total_seconds()
@@ -247,6 +249,7 @@ if __name__ == '__main__':
     all_nodes = np.arange(55)
     exclude = np.array([9, 19, 22, 31, 40, 46, 55]) - 2
     obs_nodes = np.setdiff1d(all_nodes, exclude).tolist()
+    # obs_nodes = None
     for seed in [8, 9, 10, 11]:
         run(
             epsilon=0.1,
@@ -258,8 +261,9 @@ if __name__ == '__main__':
             noise=1.0,
             modify='perm',
             obs_nodes=obs_nodes,
+            ctrl_nodes=obs_nodes,
             seed=seed,
             pbar=tqdm(),
             is_interactive=False,
             savedir='out',
-            tag='_partialobs')
+            tag='_partialctrl')
