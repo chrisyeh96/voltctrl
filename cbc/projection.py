@@ -184,12 +184,13 @@ class CBCProjection(CBCBase):
         - msg: str, (if not satisfied) describes which constraints are not satisfied,
             (if satisfied) is empty string ''
         """
+        obs = self.obs_nodes
         w_hat = self.delta_v[t-1] - self.u[t-1] @ self.X_cache
         vpar_hat = self.v[t] - self.q[t] @ self.X_cache
-        w_hat_norm = np.max(np.abs(w_hat))
+        w_hat_norm = np.max(np.abs(w_hat[obs]))
 
-        vpar_lower_violation = np.max(self.Vpar_min - vpar_hat)
-        vpar_upper_violation = np.max(vpar_hat - self.Vpar_max)
+        vpar_lower_violation = np.max(self.Vpar_min[obs] - vpar_hat[obs])
+        vpar_upper_violation = np.max(vpar_hat[obs] - self.Vpar_max[obs])
 
         msgs = []
         if w_hat_norm > self.eta:
