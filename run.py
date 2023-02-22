@@ -38,7 +38,7 @@ plt.rcParams['axes.spines.top'] = False
 
 def meta_gen_X_set(norm_bound: float, X_true: np.ndarray
                    ) -> Callable[[cp.Variable], list[Constraint]]:
-    """Creates a function that, given a cp.Variable respresenting X,
+    """Creates a function that, given a cp.Variable representing X,
     returns constraints that describe its uncertainty set 𝒳.
 
     Args
@@ -52,7 +52,7 @@ def meta_gen_X_set(norm_bound: float, X_true: np.ndarray
         """Returns constraints describing 𝒳, the uncertainty set for X.
 
         Constraints:
-        (1) var_X is PSD (enforced at cp.Variable intialization)
+        (1) var_X is PSD (enforced at cp.Variable initialization)
         (2) var_X is entry-wise nonnegative
         (3) largest entry in each row/col of var_X is on the diagonal
         (4) ||var_X - X*|| <= c * ||X*||
@@ -62,7 +62,7 @@ def meta_gen_X_set(norm_bound: float, X_true: np.ndarray
             https://math.stackexchange.com/a/1382954.
 
         Args
-        - var_X: cp.Variable, should already be constrainted to be PSD
+        - var_X: cp.Variable, should already be constrained to be PSD
 
         Returns: list of Constraint
         """

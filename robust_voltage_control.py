@@ -48,7 +48,7 @@ def robust_voltage_control(
     - pbar: optional tqdm, progress bar
     - volt_plot: VoltPlot
     - volt_plot_update: int, time steps between updating volt_plot
-    - save_Xhat_every: int, time steps between saving estiamted Xhat model
+    - save_Xhat_every: int, time steps between saving estimated Xhat model
 
     Returns
     - vs: np.array, shape [T, n]

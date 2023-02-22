@@ -66,6 +66,7 @@ class CBCProjection(CBCBase):
         slack_w = self.var_slack_w
 
         constrs = self.X_set
+        obs = self.obs_nodes
         self.param = {}
 
         Xprev = cp.Parameter((n, n), PSD=True, name='Xprev')
@@ -81,12 +82,12 @@ class CBCProjection(CBCBase):
             if b == 'lb':
                 constrs.extend([
                     lb - slack_w <= w_hats,
-                    self.Vpar_min[None, self.obs_nodes] <= vpar_hats[:, self.obs_nodes]
+                    self.Vpar_min[None, obs] <= vpar_hats[:, obs]
                 ])
             else:
                 constrs.extend([
                     w_hats <= ub + slack_w,
-                    vpar_hats[:, self.obs_nodes] <= self.Vpar_max[None, self.obs_nodes]
+                    vpar_hats[:, obs] <= self.Vpar_max[None, obs]
                 ])
 
             self.param[f'vs_{b}'] = vs
@@ -124,7 +125,7 @@ class CBCProjection(CBCBase):
         - useful: np.ndarray, shape [2, T], boolean indexing vector
             - 1st row is for lower bound, 2nd row is for upper bound
         """
-        # manage contstraints of the form: d <= b - X c
+        # manage constraints of the form: d <= b - X c
         # - each previous point (b',c') is useful if (b' ⋡ b) or (c' ⋠ c)
         # - new point is useful if no other point has (b' ≼ b and c' ≽ c)
         useful_lb = useful[0]
