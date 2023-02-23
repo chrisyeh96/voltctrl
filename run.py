@@ -52,9 +52,14 @@ def meta_gen_X_set(norm_bound: float, X_true: np.ndarray
         """Returns constraints describing 𝒳, the uncertainty set for X.
 
         Constraints:
-        - var_X is PSD (enforced at cp.Variable intialization)
-        - var_X is entry-wise nonnegative
-        - ||var_X - X*|| <= c * ||X*||
+        (1) var_X is PSD (enforced at cp.Variable intialization)
+        (2) var_X is entry-wise nonnegative
+        (3) largest entry in each row/col of var_X is on the diagonal
+        (4) ||var_X - X*|| <= c * ||X*||
+
+        Note: Constraint (1) does NOT automatically imply (3). See, e.g.,
+            https://math.stackexchange.com/a/3331028. Also related:
+            https://math.stackexchange.com/a/1382954.
 
         Args
         - var_X: cp.Variable, should already be constrainted to be PSD
@@ -64,8 +69,11 @@ def meta_gen_X_set(norm_bound: float, X_true: np.ndarray
         assert var_X.is_psd(), 'variable for X was not PSD-constrained'
         norm_sq_diff = cp_triangle_norm_sq(var_X - X_true)
         norm_X = np_triangle_norm(X_true)
-        𝒳 = [var_X >= 0,  # entry-wise nonneg
-             norm_sq_diff <= (norm_bound * norm_X)**2]
+        𝒳 = [
+            var_X >= 0,  # entry-wise nonneg
+            var_X <= cp.diag(var_X)[:, None],  # diag has largest entry per row/col
+            norm_sq_diff <= (norm_bound * norm_X)**2
+        ]
         tqdm.write('𝒳 = {X: ||X̂-X||_△ <= ' + f'{norm_bound * norm_X}' + '}')
         return 𝒳
     return gen_𝒳
@@ -75,6 +83,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
         norm_bound: float, norm_bound_init: float | None = None,
         noise: float = 0, modify: str | None = None,
         obs_nodes: Sequence[int] | None = None,
+        ctrl_nodes: Sequence[int] | None = None,
         nsamples: int = 100, seed: int = 123,
         is_interactive: bool = False, savedir: str = '',
         pbar: tqdm | None = None,
@@ -90,6 +99,8 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
         X_init is sampled
     - noise: float, network impedances modified by fraction Uniform(±noise)
     - modify: str, how to modify network, one of [None, 'perm', 'linear', 'rand']
+    - obs_nodes: list of int, nodes that we can observe voltages for
+    - ctrl_nodes: list of int, nodes that we can control voltages for
     - nsamples: int, # of samples to use for computing consistent set,
         only used when cbc_alg is 'proj' or 'steiner'
     - seed: int, random seed
@@ -107,7 +118,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
 
     params: dict[str, Any] = dict(
         cbc_alg=cbc_alg, q_max=q_max, epsilon=epsilon, eta=eta,
-        obs_nodes=obs_nodes)
+        obs_nodes=obs_nodes, ctrl_nodes=ctrl_nodes)
     filename = os.path.join(savedir, f'CBC{cbc_alg}')
 
     # read in data
@@ -172,13 +183,13 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
 
     if cbc_alg == 'const':
         sel = CBCBase(n=n, T=T, X_init=X_init, v=vpars[start],
-                      gen_X_set=gen_X_set, X_true=X, log=log)
+                      gen_X_set=gen_X_set, X_true=X, obs_nodes=obs_nodes, log=log)
     elif cbc_alg == 'proj':
         params.update(alpha=alpha, nsamples=nsamples)
         sel = CBCProjection(
             eta=eta, n=n, T=T-start, nsamples=nsamples, alpha=alpha,
             v=vpars[start], gen_X_set=gen_X_set, Vpar=(Vpar_min, Vpar_max),
-            X_init=X_init, X_true=X, log=log, seed=seed)
+            X_init=X_init, X_true=X, obs_nodes=obs_nodes, log=log, seed=seed)
         save_dict.update(w_inds=sel.w_inds, vpar_inds=sel.vpar_inds)
     elif cbc_alg == 'steiner':
         dim = n * (n+1) // 2
@@ -186,7 +197,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
         sel = CBCSteiner(
             eta=eta, n=n, T=T-start, nsamples=nsamples, nsamples_steiner=dim,
             v=vpars[start], gen_X_set=gen_X_set, Vpar=(Vpar_min, Vpar_max),
-            X_init=X_init, X_true=X, log=log, seed=seed)
+            X_init=X_init, X_true=X, obs_nodes=obs_nodes, log=log, seed=seed)
     else:
         raise ValueError('unknown cbc_alg')
 
@@ -194,12 +205,12 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
         v_lims=(np.sqrt(v_min), np.sqrt(v_max)),
         q_lims=(-q_max, q_max))
 
-    vs, qcs, dists = robust_voltage_control(
+    vs, qcs, dists, X_hats = robust_voltage_control(
         p=p[start:T], qe=qe[start:T],
         v_lims=(v_min, v_max), q_lims=(-q_max, q_max), v_nom=v_nom,
         X=X, R=R, Pv=Pv * np.eye(n), Pu=Pu * np.eye(n),
         eta=eta, eps=epsilon, v_sub=v_sub, beta=beta, sel=sel,
-        pbar=pbar, log=log,
+        ctrl_nodes=ctrl_nodes, pbar=pbar, log=log,
         volt_plot=volt_plot if is_interactive else None)
 
     elapsed = (dt.datetime.now(tz) - start_time).total_seconds()
@@ -207,7 +218,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
     # save data
     with open(f'{filename}.pkl', 'wb') as f:
         pickle.dump(file=f, obj=dict(
-            vs=vs, qcs=qcs, dists=dists, params=params,
+            vs=vs, qcs=qcs, dists=dists, X_hats=X_hats, params=params,
             elapsed=elapsed, **save_dict))
     # np.savez_compressed(f'{filename}.npz', vs=vs, qcs=qcs, dists=dists, **save_dict)
 
@@ -238,6 +249,7 @@ if __name__ == '__main__':
     all_nodes = np.arange(55)
     exclude = np.array([9, 19, 22, 31, 40, 46, 55]) - 2
     obs_nodes = np.setdiff1d(all_nodes, exclude).tolist()
+    # obs_nodes = None
     for seed in [8, 9, 10, 11]:
         run(
             epsilon=0.1,
@@ -249,8 +261,9 @@ if __name__ == '__main__':
             noise=1.0,
             modify='perm',
             obs_nodes=obs_nodes,
+            ctrl_nodes=obs_nodes,
             seed=seed,
             pbar=tqdm(),
             is_interactive=False,
             savedir='out',
-            tag='_partialobs')
+            tag='_partialctrl')

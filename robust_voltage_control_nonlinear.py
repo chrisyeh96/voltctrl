@@ -65,14 +65,15 @@ assert np.allclose(gen_p.sum(axis=0), solar)
 def robust_voltage_control(
         p: np.ndarray, qe: np.ndarray,
         v_lims: tuple[Any, Any], q_lims: tuple[Any, Any], v_nom: Any,
-        env: Any,
         X: np.ndarray, R: np.ndarray,
         Pv: np.ndarray, Pu: np.ndarray,
         eta: float | None, eps: float, v_sub: float, beta: float,
         sel: Any, pbar: tqdm | None = None,
+        ctrl_nodes: Sequence[int] | None = None,
         log: tqdm | io.TextIOBase | None = None,
         volt_plot: VoltPlot | None = None, volt_plot_update: int = 100,
-) -> tuple[np.ndarray, np.ndarray, dict[str, list], dict[str, list]]:
+        save_Xhat_every: int = 100
+        ) -> tuple[np.ndarray, np.ndarray, dict[str, list], dict[int, np.ndarray]]:
     """Runs robust voltage control.
 
     Args
@@ -83,9 +84,8 @@ def robust_voltage_control(
     - q_lims: tuple (q_min, q_max), reactive power injection limits (MVar)
         - q_min, q_max could be floats, or np.arrays of shape [n]
     - v_nom: float or np.array of shape [n], desired nominal voltage
-    - env: gym environment, the nonlinear voltage simulation environment
-    - X: true linearized parameter X
-    - R: true linearized parameter R
+    - X: np.array, shape [n, n], line parameters for reactive power injection
+    - R: np.array, shape [n, n], line parameters for active power injection
     - Pv: np.array, shape [n, n], quadratic (PSD) cost matrix for voltage
     - Pu: np.array, shape [n, n], quadratic (PSD) cost matrix for control
     - eta: float, noise bound (kV^2)
@@ -94,9 +94,11 @@ def robust_voltage_control(
     - eps: float, robustness buffer (kV^2)
     - v_sub: float, fixed squared voltage magnitude at substation (kV^2)
     - sel: nested convex body chasing object (e.g., CBCProjection)
+    - ctrl_nodes: list of int, nodes that we can control voltages for
     - pbar: optional tqdm, progress bar
     - volt_plot: VoltPlot
     - volt_plot_update: int, time steps between updating volt_plot
+    - save_Xhat_every: int, time steps between saving estiamted Xhat model
 
     Returns
     - vs: np.array, shape [T, n]
@@ -107,6 +109,9 @@ def robust_voltage_control(
             v(t), q^c(t), u(t-1)
         - 'true': list of float, ||X̂-X||_△ after each model update
         - 'prev': list of float, ||X̂(t)-X̂(t-1)||_△ after each model update
+    - X_hats: dict, keys are time steps, values are np.array, shape [n, n]
+        - X_hats[t] is the estimated model after observing vs[t], qcs[t]
+    - check_prediction: dict, keys are adaptive_linear and fixed_optimal_linear that contains the list of prediction error (scalars)
     """
     assert p.shape == qe.shape
     T, n = qe.shape
@@ -164,6 +169,10 @@ def robust_voltage_control(
         q_min <= qc_next, qc_next <= q_max,
         v_min + k - slack <= v_next, v_next <= v_max - k + slack
     ]
+    if ctrl_nodes is not None:
+        all_nodes = np.arange(n)
+        unctrl_nodes = np.setdiff1d(all_nodes, ctrl_nodes).tolist()
+        constraints.append(u[unctrl_nodes] == 0)
     prob = cp.Problem(objective=obj, constraints=constraints)
 
     # if cp.Problem is DPP, then it can be compiled for speedup
@@ -175,6 +184,7 @@ def robust_voltage_control(
         log.write('pbar present')
         pbar.reset(total=T-1)
 
+    X_hats = {}
     for t in range(T-1):  # t = 0, ..., T-2
         # fill in Parameters
         if is_learning_eta:
@@ -187,6 +197,9 @@ def robust_voltage_control(
             # X̂.value = sel.select(t) ##TODO: change back to adaptive algorithm!
             X̂.value = X
             satisfied, msg = sel._check_newest_obs(t, X)
+            if (t+1) % save_Xhat_every == 0:
+                X_hats[t] = np.array(X̂.value)  # save a copy
+                
             if not satisfied:
                 # print(msg)
                 log.write(f't={t} linear X does not satisfy the nonlinear constraints: {msg}')
@@ -243,7 +256,7 @@ def robust_voltage_control(
                          dists=(dists['t'], dists['true']))
         volt_plot.show(clear_display=False)
 
-    return vs, qcs, dists, check_prediction
+    return vs, qcs, dists, X_hats, check_prediction
 
 
 def update_dists(dists: dict[str, list], t: int, Xhat: np.ndarray,

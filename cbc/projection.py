@@ -146,10 +146,6 @@ class CBCProjection(CBCBase):
         """
         Args
         - t: int, current time step (>=1), v[t] and q[t] have just been updated
-
-        Args
-        - v: np.array, v(t+1) = v(t) + X @ u(t) = X @ q^c(t+1) + vpar(t+1)
-        - u: np.array, u(t) = q^c(t+1) - q^c(t)
         """
         # update self.u and self.delta_v
         super().add_obs(t)
@@ -189,39 +185,26 @@ class CBCProjection(CBCBase):
             (if satisfied) is empty string ''
         """
         if X_test is None:
-            w_hat = self.delta_v[t-1] - self.u[t-1] @ self.X_cache
-            vpar_hat = self.v[t] - self.q[t] @ self.X_cache
-            w_hat_norm = np.max(np.abs(w_hat))
-
-            vpar_lower_violation = np.max(self.Vpar_min - vpar_hat)
-            vpar_upper_violation = np.max(vpar_hat - self.Vpar_max)
-
-            msgs = []
-            if w_hat_norm > self.eta:
-                msgs.append(f'||ŵ(t)||∞: {w_hat_norm:.3f}')
-            if vpar_lower_violation > 0.05:
-                msgs.append(f'max(vpar_min - vpar_hat): {vpar_lower_violation:.3f}')
-            if vpar_upper_violation > 0.05:
-                msgs.append(f'max(vpar_hat - vpar_max): {vpar_upper_violation:.3f}')
-            satisfied = (len(msgs) == 0)
-            msg = ', '.join(msgs)
+            X = self.X_cache
         else:
-            w_hat = self.delta_v[t-1] - self.u[t-1] @ X_test
-            vpar_hat = self.v[t] - self.q[t] @ X_test
-            w_hat_norm = np.max(np.abs(w_hat))
+            X = X_test
+        obs = self.obs_nodes
+        w_hat = self.delta_v[t-1] - self.u[t-1] @ X
+        vpar_hat = self.v[t] - self.q[t] @ X
+        w_hat_norm = np.max(np.abs(w_hat[obs]))
 
-            vpar_lower_violation = np.max(self.Vpar_min - vpar_hat)
-            vpar_upper_violation = np.max(vpar_hat - self.Vpar_max)
+        vpar_lower_violation = np.max(self.Vpar_min[obs] - vpar_hat[obs])
+        vpar_upper_violation = np.max(vpar_hat[obs] - self.Vpar_max[obs])
 
-            msgs = []
-            if w_hat_norm > self.eta:
-                msgs.append(f'||ŵ(t)||∞: {w_hat_norm:.3f}')
-            if vpar_lower_violation > 0.05:
-                msgs.append(f'max(vpar_min - vpar_hat): {vpar_lower_violation:.3f}')
-            if vpar_upper_violation > 0.05:
-                msgs.append(f'max(vpar_hat - vpar_max): {vpar_upper_violation:.3f}')
-            satisfied = (len(msgs) == 0)
-            msg = ', '.join(msgs)            
+        msgs = []
+        if w_hat_norm > self.eta:
+            msgs.append(f'||ŵ(t)||∞: {w_hat_norm:.3f}')
+        if vpar_lower_violation > 0.05:
+            msgs.append(f'max(vpar_min - vpar_hat): {vpar_lower_violation:.3f}')
+        if vpar_upper_violation > 0.05:
+            msgs.append(f'max(vpar_hat - vpar_max): {vpar_upper_violation:.3f}')
+        satisfied = (len(msgs) == 0)
+        msg = ', '.join(msgs)
         return satisfied, msg
 
     def select(self, t: int) -> np.ndarray:
@@ -277,7 +260,7 @@ class CBCProjection(CBCBase):
             #     rng.choice(t-k, size=self.nsamples-k, replace=False)])
 
             for i, b in enumerate(['lb', 'ub']):
-                w_inds = self.w_inds[i].nonzero()[0]
+                w_inds = self.w_inds[i, :t].nonzero()[0]
                 ts = np.concatenate([
                     w_inds[-k:],
                     self.rng.choice(len(w_inds) - k, size=self.nsamples-k, replace=False)
@@ -285,7 +268,7 @@ class CBCProjection(CBCBase):
                 self.param[f'delta_vs_{b}'].value = self.delta_v[ts]
                 self.param[f'us_{b}'].value = self.u[ts]
 
-                vpar_inds = self.vpar_inds[i].nonzero()[0]
+                vpar_inds = self.vpar_inds[i, :t+1].nonzero()[0]
                 ts = np.concatenate([
                     vpar_inds[-k:],
                     self.rng.choice(len(vpar_inds) - k, size=self.nsamples-k, replace=False)
