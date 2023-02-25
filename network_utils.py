@@ -79,6 +79,7 @@ def create_RX_from_net(net: pp.pandapowerNet, noise: float = 0,
         x_ohm_per_km = x_ohm_per_km + rng.uniform(-noise_limit, noise_limit)
 
     if modify in ('perm', None):  # permute the line numbers
+        net = copy.deepcopy(net)  # don't modify original net
         if modify == 'perm':
             order = np.zeros(n+1, dtype=int)
             order[1:] = rng.permutation(np.arange(1, n+1))
@@ -370,6 +371,7 @@ def X_to_ancestors(X: np.ndarray) -> tuple[dict[int, set[int]], np.ndarray]:
                 #                 X[dj, di] = shared
 
     return ancestors, X
+
 
 def check_ancestors_completeness(ancestors):
     # complete = {}

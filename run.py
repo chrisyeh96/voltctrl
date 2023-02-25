@@ -123,7 +123,8 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
 
     # read in data
     if noise > 0 or modify is not None:
-        params.update(seed=seed, norm_bound=norm_bound, norm_bound_init=norm_bound_init)
+        params.update(seed=seed, norm_bound=norm_bound,
+                      norm_bound_init=norm_bound_init)
         if noise > 0:
             params.update(noise=noise)
             filename += f'_noise{noise}'
@@ -170,7 +171,8 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
     start = 0  # starting time step
 
     # randomly initialize a network matrix
-    _, X_init = create_RX_from_net(net, noise=noise, modify=modify, check_pd=True, seed=seed)
+    _, X_init = create_RX_from_net(net, noise=noise, modify=modify,
+                                   check_pd=True, seed=seed)
     save_dict = dict(X_init=X_init)
     if norm_bound_init is not None:
         assert norm_bound_init < norm_bound
@@ -183,7 +185,8 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
 
     if cbc_alg == 'const':
         sel = CBCBase(n=n, T=T, X_init=X_init, v=vpars[start],
-                      gen_X_set=gen_X_set, X_true=X, obs_nodes=obs_nodes, log=log)
+                      gen_X_set=gen_X_set, X_true=X, obs_nodes=obs_nodes,
+                      log=log)
     elif cbc_alg == 'proj':
         params.update(alpha=alpha, nsamples=nsamples)
         sel = CBCProjection(
@@ -220,7 +223,6 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
         pickle.dump(file=f, obj=dict(
             vs=vs, qcs=qcs, dists=dists, X_hats=X_hats, params=params,
             elapsed=elapsed, **save_dict))
-    # np.savez_compressed(f'{filename}.npz', vs=vs, qcs=qcs, dists=dists, **save_dict)
 
     # plot and save figure
     volt_plot.update(qcs=qcs,
