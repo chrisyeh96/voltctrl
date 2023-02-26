@@ -341,19 +341,27 @@ def known_topology_constraints(
     constraints = []
     for i in range(known_bus_topo):
         for j in range(i, known_bus_topo):
+            # if the line params are known, then those constraints will
+            # supersede the topology constraints
             if i < known_line_params and j < known_line_params:
                 continue
-            if i == j and i > 0:
-                parent = next(DG.predecessors(i))
-                constr = (X[i, i] >= X[parent, parent])
-            elif i in nx.ancestors(DG, source=j):
-                constr = (X[i, j] == X[i, i])
-            elif j in nx.ancestors(DG, source=i):
-                constr = (X[i, j] == X[j, j])
+
+            # buses are numbered such that parent(i) < i, so we know the
+            # topology relationship between parent and bus i
+            # - but bus 0's parent is the substation (-1), and the constraint
+            #   X[0, 0] >= 0 is already part of the consistent set definition
+            elif i == j:
+                if i == 0:
+                    continue
+                else:
+                    parent = next(DG.predecessors(i))
+                    constr = (X[i, i] >= X[parent, parent])
+
+            # j > i
             else:
                 lca = nx.lowest_common_ancestor(DG, i, j)
                 assert lca is not None
-                if lca == -1:
+                if lca == -1:  # lca is substation
                     constr = (X[i, j] == 0)
                 else:
                     constr = (X[i, j] == X[lca, lca])
