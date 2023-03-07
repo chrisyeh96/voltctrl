@@ -19,9 +19,10 @@ from network_utils import (
     create_RX_from_net,
     np_triangle_norm,
     read_load_data)
-from robust_voltage_control import (
+from robust_voltage_control_nonlinear import (
     VoltPlot,
     robust_voltage_control)
+from nonlinear_simulation import VoltageCtrl_nonlinear
 
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -194,21 +195,21 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
     gen_X_set = meta_gen_X_set(norm_bound=norm_bound, X_true=X)
 
     if cbc_alg == 'const':
-        sel = CBCBase(n=n, T=T, X_init=X_init, v=vpars[start],
+        sel = CBCBase(n=n, T=T, X_init=X_init, v=nonlinear_vpars[start],
                       gen_X_set=gen_X_set, X_true=X, obs_nodes=obs_nodes, log=log)
     elif cbc_alg == 'proj':
         params.update(alpha=alpha, nsamples=nsamples)
         sel = CBCProjection(
             eta=eta, n=n, T=T-start, nsamples=nsamples, alpha=alpha,
-            v=vpars[start], gen_X_set=gen_X_set, Vpar=(Vpar_min, Vpar_max),
-            X_init=X_init, X_true=X, obs_nodes=obs_nodes, log=log, seed=seed)
+            v=nonlinear_vpars[start], gen_X_set=gen_X_set, Vpar=(nonlinear_Vpar_min, nonlinear_Vpar_max),
+            X_init=X_init, X_true=X, obs_nodes=obs_nodes, log=log, seed=seed) #TODO: change back X_init to X_init instead of X(true)!
         save_dict.update(w_inds=sel.w_inds, vpar_inds=sel.vpar_inds)
     elif cbc_alg == 'steiner':
         dim = n * (n+1) // 2
         params.update(nsamples=nsamples, nsamples_steiner=dim)
         sel = CBCSteiner(
             eta=eta, n=n, T=T-start, nsamples=nsamples, nsamples_steiner=dim,
-            v=vpars[start], gen_X_set=gen_X_set, Vpar=(Vpar_min, Vpar_max),
+            v=nonlinear_vpars[start], gen_X_set=gen_X_set, Vpar=(nonlinear_Vpar_min, nonlinear_Vpar_max),
             X_init=X_init, X_true=X, obs_nodes=obs_nodes, log=log, seed=seed)
     else:
         raise ValueError('unknown cbc_alg')
@@ -217,9 +218,9 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
         v_lims=(np.sqrt(v_min), np.sqrt(v_max)),
         q_lims=(-q_max, q_max))
 
-    vs, qcs, dists, X_hats = robust_voltage_control(
+    vs, qcs, dists, X_hats, check_prediction = robust_voltage_control(
         p=p[start:T], qe=qe[start:T],
-        v_lims=(v_min, v_max), q_lims=(-q_max, q_max), v_nom=v_nom,
+        v_lims=(v_min, v_max), q_lims=(-q_max, q_max), v_nom=v_nom, env=env,
         X=X, R=R, Pv=Pv * np.eye(n), Pu=Pu * np.eye(n),
         eta=eta, eps=epsilon, v_sub=v_sub, beta=beta, sel=sel,
         ctrl_nodes=ctrl_nodes, pbar=pbar, log=log,
@@ -272,12 +273,12 @@ if __name__ == '__main__':
     all_nodes = np.arange(55)
     exclude = np.array([9, 19, 22, 31, 40, 46, 55]) - 2
     obs_nodes = np.setdiff1d(all_nodes, exclude).tolist()
-    for seed in [8,]: #[8, 9, 10, 11]:
+    for seed in [8,9,10,11]: #[8, 9, 10, 11]:
         run(
             epsilon=0.1,
             q_max=0.24,
             cbc_alg='proj',
-            eta=8.65,
+            eta= 20, # 8.65,
             norm_bound=1.0,
             norm_bound_init=None,
             noise=1.0,
@@ -288,4 +289,4 @@ if __name__ == '__main__':
             pbar=tqdm(),
             is_interactive=False,
             savedir='out',
-            tag='_partialctrl')
+            tag='_partialctrl_fixed')
