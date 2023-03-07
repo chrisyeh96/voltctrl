@@ -65,6 +65,7 @@ assert np.allclose(gen_p.sum(axis=0), solar)
 def robust_voltage_control(
         p: np.ndarray, qe: np.ndarray,
         v_lims: tuple[Any, Any], q_lims: tuple[Any, Any], v_nom: Any,
+        env: Any,
         X: np.ndarray, R: np.ndarray,
         Pv: np.ndarray, Pu: np.ndarray,
         eta: float | None, eps: float, v_sub: float, beta: float,
@@ -84,6 +85,7 @@ def robust_voltage_control(
     - q_lims: tuple (q_min, q_max), reactive power injection limits (MVar)
         - q_min, q_max could be floats, or np.arrays of shape [n]
     - v_nom: float or np.array of shape [n], desired nominal voltage
+    - env: gym environment, the nonlinear voltage simulation environment
     - X: np.array, shape [n, n], line parameters for reactive power injection
     - R: np.array, shape [n, n], line parameters for active power injection
     - Pv: np.array, shape [n, n], quadratic (PSD) cost matrix for voltage
@@ -194,8 +196,8 @@ def robust_voltage_control(
             # X̂_prev = np.array(X̂.value)  # save a copy
             # etahat_prev = float(eta.value)  # save a copy
         else:
-            # X̂.value = sel.select(t) ##TODO: change back to adaptive algorithm!
-            X̂.value = X
+            X̂.value = sel.select(t) ##TODO: change back to adaptive algorithm!
+            # X̂.value = X
             satisfied, msg = sel._check_newest_obs(t, X)
             if (t+1) % save_Xhat_every == 0:
                 X_hats[t] = np.array(X̂.value)  # save a copy
