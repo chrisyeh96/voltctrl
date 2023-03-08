@@ -5,17 +5,17 @@ import copy
 from typing import TypeVar
 import warnings
 
+import cvxpy as cp
 import networkx as nx
 import numpy as np
 import pandapower as pp
 import pandapower.topology
 import scipy.io
 import os
-
 warnings.filterwarnings('ignore', category=FutureWarning)
 
 T = TypeVar('T')
-
+Constraint = cp.constraints.constraint.Constraint
 
 def create_56bus() -> pp.pandapowerNet:
     """
@@ -79,6 +79,7 @@ def create_RX_from_net(net: pp.pandapowerNet, noise: float = 0,
         x_ohm_per_km = x_ohm_per_km + rng.uniform(-noise_limit, noise_limit)
 
     if modify in ('perm', None):  # permute the line numbers
+        net = copy.deepcopy(net) # don't modify original net
         if modify == 'perm':
             order = np.zeros(n+1, dtype=int)
             order[1:] = rng.permutation(np.arange(1, n+1))
@@ -302,6 +303,68 @@ def np_triangle_norm(x: np.ndarray) -> float:
     return np.linalg.norm(np.triu(x), ord='fro')
 
 
+def known_topology_constraints(
+        X: cp.Variable,
+        net: pp.pandapowerNet,
+        known_line_params: int,
+        known_bus_topo: int
+        ) -> list[Constraint]:
+    """Specifies constraints on X matrix if we know the network topology
+    among all buses in {1, ..., known_bus_topo}.
+    Args
+    - X: shape [n, n], optimization variable
+    - net: pandapowerNet representing a tree-structured distribution grid
+        with (n+1) buses numbered [0 (substation), ..., n] such that if
+        bus i is a parent of bus j, then i < j
+    - known_bus_topo: int in [0, n], n = # of buses (excluding substation),
+        when topology is known for buses/lines in {1, ..., known_bus_topo}
+    - known_line_params: int in [0, known_bus_topo], when line parameters
+        (little x_{ij}) are known ∀ i,j in {1, ..., known_line_params}
+    Returns: list of cp.Constraints
+    """
+    assert known_bus_topo >= 0
+    if known_bus_topo == 0:
+        return []
+
+    G = pp.topology.create_nxgraph(net)  # buses numbered 0, ..., n+1
+    mapping = {i: i-1 for i in range(len(G))}
+    nx.relabel_nodes(G, mapping=mapping, copy=False)  # buses numbered -1, 0, ..., n
+    DG = nx.bfs_tree(G, source=-1)  # tree, edges parent -> child
+
+    for n1, n2 in DG.edges:
+        assert n1 < n2
+
+    constraints = []
+    for i in range(known_bus_topo):
+        for j in range(i, known_bus_topo):
+            # if the line params are known, then those constraints will
+            # supersede the topology constraints
+            if i < known_line_params and j < known_line_params:
+                continue
+
+            # buses are numbered such that parent(i) < i, so we know the
+            # topology relationship between parent and bus i
+            # - but bus 0's parent is the substation (-1), and the constraint
+            #   X[0, 0] >= 0 is already part of the consistent set definition
+            elif i == j:
+                if i == 0:
+                    continue
+                else:
+                    parent = next(DG.predecessors(i))
+                    constr = (X[i, i] >= X[parent, parent])
+
+            # j > i
+            else:
+                lca = nx.lowest_common_ancestor(DG, i, j)
+                assert lca is not None
+                if lca == -1:  # lca is substation
+                    constr = (X[i, j] == 0)
+                else:
+                    constr = (X[i, j] == X[lca, lca])
+            constraints.append(constr)
+    return constraints
+
+
 def X_to_ancestors(X: np.ndarray) -> tuple[dict[int, set[int]], np.ndarray]:
     """Constructs ancestor map from X matrix.
 
@@ -370,6 +433,7 @@ def X_to_ancestors(X: np.ndarray) -> tuple[dict[int, set[int]], np.ndarray]:
                 #                 X[dj, di] = shared
 
     return ancestors, X
+
 
 def check_ancestors_completeness(ancestors):
     # complete = {}

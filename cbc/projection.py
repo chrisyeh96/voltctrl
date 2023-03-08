@@ -66,6 +66,7 @@ class CBCProjection(CBCBase):
         slack_w = self.var_slack_w
 
         constrs = self.X_set
+        obs = self.obs_nodes
         self.param = {}
 
         Xprev = cp.Parameter((n, n), PSD=True, name='Xprev')
@@ -81,12 +82,12 @@ class CBCProjection(CBCBase):
             if b == 'lb':
                 constrs.extend([
                     lb - slack_w <= w_hats,
-                    self.Vpar_min[None, self.obs_nodes] <= vpar_hats[:, self.obs_nodes]
+                    self.Vpar_min[None, obs] <= vpar_hats[:, obs]
                 ])
             else:
                 constrs.extend([
                     w_hats <= ub + slack_w,
-                    vpar_hats[:, self.obs_nodes] <= self.Vpar_max[None, self.obs_nodes]
+                    vpar_hats[:, obs] <= self.Vpar_max[None, obs]
                 ])
 
             self.param[f'vs_{b}'] = vs
