@@ -196,8 +196,8 @@ def robust_voltage_control(
             # X̂_prev = np.array(X̂.value)  # save a copy
             # etahat_prev = float(eta.value)  # save a copy
         else:
-            X̂.value = sel.select(t) ##TODO: change back to adaptive algorithm!
-            # X̂.value = X
+            # X̂.value = sel.select(t) ##TODO: change back to adaptive algorithm!
+            X̂.value = X
             satisfied, msg = sel._check_newest_obs(t, X)
             if (t+1) % save_Xhat_every == 0:
                 X_hats[t] = np.array(X̂.value)  # save a copy

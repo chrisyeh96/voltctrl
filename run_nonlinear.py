@@ -273,7 +273,8 @@ if __name__ == '__main__':
     all_nodes = np.arange(55)
     exclude = np.array([9, 19, 22, 31, 40, 46, 55]) - 2
     obs_nodes = np.setdiff1d(all_nodes, exclude).tolist()
-    for seed in [8,9,10,11]: #[8, 9, 10, 11]:
+    # obs_nodes = None
+    for seed in [11,]: #[8, 9, 10, 11]:
         run(
             epsilon=0.1,
             q_max=0.24,
@@ -288,5 +289,5 @@ if __name__ == '__main__':
             seed=seed,
             pbar=tqdm(),
             is_interactive=False,
-            savedir='out',
+            savedir='out-nonlinear-full',
             tag='_partialctrl_fixed')

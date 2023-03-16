@@ -314,10 +314,10 @@ if __name__ == '__main__':
             modify='perm',
             obs_nodes=obs_nodes,
             ctrl_nodes=obs_nodes,
-            known_line_params=0,
+            known_line_params=14,
             known_bus_topo=14,
             seed=seed,
             pbar=tqdm(),
             is_interactive=False,
-            savedir='out',
-            tag='_partialctrl_topo14line0')
+            savedir='out-nonlinear-full',
+            tag='_fullctrl_adaptive_topo14line14')
