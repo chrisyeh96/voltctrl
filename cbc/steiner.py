@@ -37,7 +37,7 @@ class CBCSteiner(CBCBase):
         - seed: int, random seed
         """
         super().__init__(n=n, T=T, X_init=X_init, v=v, gen_X_set=gen_X_set,
-                         X_true=X_true, log=log)
+                         X_true=X_true, obs_nodes=obs_nodes, log=log)
         self.dim = n * (n+1) // 2
         self.is_cached = True
 
@@ -98,6 +98,7 @@ class CBCSteiner(CBCBase):
         X = self.var_X
 
         constrs = self.X_set
+        obs = self.obs_nodes
         self.param = {}
         for b in ['lb', 'ub']:
             vs = cp.Parameter((self.nsamples, n), name=f'vs_{b}')
@@ -110,10 +111,10 @@ class CBCSteiner(CBCBase):
 
             if b == 'lb':
                 constrs.extend([lb <= w_hats,
-                                self.Vpar_min[None, :] <= vpar_hats])
+                                self.Vpar_min[None, obs] <= vpar_hats[:, obs]])
             else:
                 constrs.extend([w_hats <= ub,
-                                vpar_hats <= self.Vpar_max[None, :]])
+                                vpar_hats[:, obs] <= self.Vpar_max[None, obs]])
 
             self.param[f'vs_{b}'] = vs
             self.param[f'delta_vs_{b}'] = delta_vs
@@ -141,7 +142,7 @@ class CBCSteiner(CBCBase):
         - useful: np.ndarray, shape [2, T], boolean indexing vector
             - 1st row is for lower bound, 2nd row is for upper bound
         """
-        # manage contstraints of the form: d <= b - X c
+        # manage constraints of the form: d <= b - X c
         # - each previous point (b',c') is useful if (b' ⋡ b) or (c' ⋠ c)
         # - new point is useful if no other point has (b' ≼ b and c' ≽ c)
         useful_lb = useful[0]
@@ -205,12 +206,13 @@ class CBCSteiner(CBCBase):
         - msg: str, (if not satisfied) describes which constraints are not satisfied,
             (if satisfied) is empty string ''
         """
+        obs = self.obs_nodes
         w_hat = self.delta_v[t-1] - self.u[t-1] @ self.X_cache
         vpar_hat = self.v[t] - self.q[t] @ self.X_cache
         w_hat_norm = np.max(np.abs(w_hat))
 
-        vpar_lower_violation = np.max(self.Vpar_min - vpar_hat)
-        vpar_upper_violation = np.max(vpar_hat - self.Vpar_max)
+        vpar_lower_violation = np.max(self.Vpar_min[obs] - vpar_hat[obs])
+        vpar_upper_violation = np.max(vpar_hat[obs] - self.Vpar_max[obs])
 
         msgs = []
         if w_hat_norm > self.eta:

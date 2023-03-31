@@ -9,6 +9,7 @@ from typing import Any
 import cvxpy as cp
 import matplotlib.pyplot as plt
 import numpy as np
+import pandapower as pp
 from tqdm.auto import tqdm
 
 from cbc.base import CBCBase, cp_triangle_norm_sq, project_into_X_set
@@ -17,6 +18,7 @@ from cbc.steiner import CBCSteiner
 from network_utils import (
     create_56bus,
     create_RX_from_net,
+    known_topology_constraints,
     np_triangle_norm,
     read_load_data)
 from robust_voltage_control import (
@@ -36,23 +38,32 @@ plt.rcParams['axes.spines.right'] = False
 plt.rcParams['axes.spines.top'] = False
 
 
-def meta_gen_X_set(norm_bound: float, X_true: np.ndarray
+def meta_gen_X_set(norm_bound: float, X_true: np.ndarray,
+                   net: pp.pandapowerNet,
+                   known_bus_topo: int = 0,
+                   known_line_params: int = 0
                    ) -> Callable[[cp.Variable], list[Constraint]]:
-    """Creates a function that, given a cp.Variable respresenting X,
+    """Creates a function that, given a cp.Variable representing X,
     returns constraints that describe its uncertainty set 𝒳.
 
     Args
-    - norm_bound: float, parameter c such that
+    - norm_bound: parameter c such that
         ||var_X - X*||_△ <= c * ||X*||_△
-    - X_true: np.ndarray, PSD matrix of shape [n, n]
+    - X_true: shape [n, n], PSD
+    - known_bus_topo: int in [0, n], n = # of buses (excluding substation),
+        when topology is known for buses/lines in {0, ..., known_bus_topo-1}
+    - known_line_params: int in [0, known_bus_topo], when line parameters
+        (little x_{ij}) are known ∀ i,j in {0, ..., known_line_params-1}
 
     Returns: function
     """
+    assert known_line_params <= known_bus_topo
+
     def gen_𝒳(var_X: cp.Variable) -> list[Constraint]:
         """Returns constraints describing 𝒳, the uncertainty set for X.
 
         Constraints:
-        (1) var_X is PSD (enforced at cp.Variable intialization)
+        (1) var_X is PSD (enforced at cp.Variable initialization)
         (2) var_X is entry-wise nonnegative
         (3) largest entry in each row/col of var_X is on the diagonal
         (4) ||var_X - X*|| <= c * ||X*||
@@ -62,7 +73,7 @@ def meta_gen_X_set(norm_bound: float, X_true: np.ndarray
             https://math.stackexchange.com/a/1382954.
 
         Args
-        - var_X: cp.Variable, should already be constrainted to be PSD
+        - var_X: cp.Variable, should already be constrained to be PSD
 
         Returns: list of Constraint
         """
@@ -74,6 +85,15 @@ def meta_gen_X_set(norm_bound: float, X_true: np.ndarray
             var_X <= cp.diag(var_X)[:, None],  # diag has largest entry per row/col
             norm_sq_diff <= (norm_bound * norm_X)**2
         ]
+        if known_line_params > 0:
+            𝒳.append(
+                var_X[:known_line_params, :known_line_params]
+                == X_true[:known_line_params, :known_line_params])
+        if known_bus_topo > known_line_params:
+            topo_constraints = known_topology_constraints(
+                var_X, net, known_line_params, known_bus_topo)
+            𝒳.extend(topo_constraints)
+
         tqdm.write('𝒳 = {X: ||X̂-X||_△ <= ' + f'{norm_bound * norm_X}' + '}')
         return 𝒳
     return gen_𝒳
@@ -84,6 +104,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
         noise: float = 0, modify: str | None = None,
         obs_nodes: Sequence[int] | None = None,
         ctrl_nodes: Sequence[int] | None = None,
+        known_bus_topo: int = 0, known_line_params: int = 0,
         nsamples: int = 100, seed: int = 123,
         is_interactive: bool = False, savedir: str = '',
         pbar: tqdm | None = None,
@@ -101,6 +122,10 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
     - modify: str, how to modify network, one of [None, 'perm', 'linear', 'rand']
     - obs_nodes: list of int, nodes that we can observe voltages for
     - ctrl_nodes: list of int, nodes that we can control voltages for
+    - known_bus_topo: int in [0, n], n = # of buses (excluding substation),
+        when topology is known for buses/lines in {0, ..., known_bus_topo-1}
+    - known_line_params: int in [0, known_bus_topo], when line parameters
+        (little x_{ij}) are known ∀ i,j in {0, ..., known_line_params-1}
     - nsamples: int, # of samples to use for computing consistent set,
         only used when cbc_alg is 'proj' or 'steiner'
     - seed: int, random seed
@@ -118,12 +143,14 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
 
     params: dict[str, Any] = dict(
         cbc_alg=cbc_alg, q_max=q_max, epsilon=epsilon, eta=eta,
-        obs_nodes=obs_nodes, ctrl_nodes=ctrl_nodes)
+        obs_nodes=obs_nodes, ctrl_nodes=ctrl_nodes,
+        known_bus_topo=known_bus_topo, known_line_params=known_line_params)
     filename = os.path.join(savedir, f'CBC{cbc_alg}')
 
     # read in data
     if noise > 0 or modify is not None:
-        params.update(seed=seed, norm_bound=norm_bound, norm_bound_init=norm_bound_init)
+        params.update(seed=seed, norm_bound=norm_bound,
+                      norm_bound_init=norm_bound_init)
         if noise > 0:
             params.update(noise=noise)
             filename += f'_noise{noise}'
@@ -170,20 +197,28 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
     start = 0  # starting time step
 
     # randomly initialize a network matrix
-    _, X_init = create_RX_from_net(net, noise=noise, modify=modify, check_pd=True, seed=seed)
+    _, X_init = create_RX_from_net(net, noise=noise, modify=modify,
+                                   check_pd=True, seed=seed)
     save_dict = dict(X_init=X_init)
     if norm_bound_init is not None:
         assert norm_bound_init < norm_bound
         var_X = cp.Variable(X.shape, PSD=True)
-        init_X_set = meta_gen_X_set(norm_bound=norm_bound_init, X_true=X)(var_X)
-        project_into_X_set(X_init=X_init, var_X=var_X, log=log, X_set=init_X_set, X_true=X)
+        init_X_set = meta_gen_X_set(
+            norm_bound=norm_bound_init, X_true=X, net=net,
+            known_bus_topo=known_bus_topo, known_line_params=known_line_params
+        )(var_X)
+        project_into_X_set(X_init=X_init, var_X=var_X, log=log,
+                           X_set=init_X_set, X_true=X)
         X_init = var_X.value
 
-    gen_X_set = meta_gen_X_set(norm_bound=norm_bound, X_true=X)
+    gen_X_set = meta_gen_X_set(
+            norm_bound=norm_bound, X_true=X, net=net,
+            known_bus_topo=known_bus_topo, known_line_params=known_line_params)
 
     if cbc_alg == 'const':
         sel = CBCBase(n=n, T=T, X_init=X_init, v=vpars[start],
-                      gen_X_set=gen_X_set, X_true=X, obs_nodes=obs_nodes, log=log)
+                      gen_X_set=gen_X_set, X_true=X, obs_nodes=obs_nodes,
+                      log=log)
     elif cbc_alg == 'proj':
         params.update(alpha=alpha, nsamples=nsamples)
         sel = CBCProjection(
@@ -220,7 +255,6 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
         pickle.dump(file=f, obj=dict(
             vs=vs, qcs=qcs, dists=dists, X_hats=X_hats, params=params,
             elapsed=elapsed, **save_dict))
-    # np.savez_compressed(f'{filename}.npz', vs=vs, qcs=qcs, dists=dists, **save_dict)
 
     # plot and save figure
     volt_plot.update(qcs=qcs,
@@ -246,15 +280,16 @@ def wrap_write_newlines(f: Any) -> Any:
 
 
 if __name__ == '__main__':
-    all_nodes = np.arange(55)
-    exclude = np.array([9, 19, 22, 31, 40, 46, 55]) - 2
-    obs_nodes = np.setdiff1d(all_nodes, exclude).tolist()
-    # obs_nodes = None
-    for seed in [8, 9, 10, 11]:
+    # all_nodes = np.arange(55)
+    # exclude = np.array([9, 19, 22, 31, 40, 46, 55]) - 2
+    # obs_nodes = np.setdiff1d(all_nodes, exclude).tolist()
+    obs_nodes = None
+    for seed in [8, 9, 10, 11]:  # for norm_bound=1.0, noise=1.0
+    # for seed in [55, 56, 57, 58]:  # for norm_bound=0.5, noise=0.5
         run(
             epsilon=0.1,
             q_max=0.24,
-            cbc_alg='proj',
+            cbc_alg='proj',  # 'proj',
             eta=8.65,
             norm_bound=1.0,
             norm_bound_init=None,
@@ -262,8 +297,10 @@ if __name__ == '__main__':
             modify='perm',
             obs_nodes=obs_nodes,
             ctrl_nodes=obs_nodes,
+            known_line_params=0,
+            known_bus_topo=14,
             seed=seed,
             pbar=tqdm(),
             is_interactive=False,
             savedir='out',
-            tag='_partialctrl')
+            tag='_knowntopo14')  # choose from ['', '_partialobs', '_partialctrl', '_knowntopoX', '_knownlinesX']

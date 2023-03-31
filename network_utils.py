@@ -17,6 +17,7 @@ warnings.filterwarnings('ignore', category=FutureWarning)
 T = TypeVar('T')
 Constraint = cp.constraints.constraint.Constraint
 
+
 def create_56bus() -> pp.pandapowerNet:
     """
     Creates the SCE 56-bus network from the MATPOWER file.
@@ -79,7 +80,7 @@ def create_RX_from_net(net: pp.pandapowerNet, noise: float = 0,
         x_ohm_per_km = x_ohm_per_km + rng.uniform(-noise_limit, noise_limit)
 
     if modify in ('perm', None):  # permute the line numbers
-        net = copy.deepcopy(net) # don't modify original net
+        net = copy.deepcopy(net)  # don't modify original net
         if modify == 'perm':
             order = np.zeros(n+1, dtype=int)
             order[1:] = rng.permutation(np.arange(1, n+1))
@@ -311,6 +312,7 @@ def known_topology_constraints(
         ) -> list[Constraint]:
     """Specifies constraints on X matrix if we know the network topology
     among all buses in {1, ..., known_bus_topo}.
+
     Args
     - X: shape [n, n], optimization variable
     - net: pandapowerNet representing a tree-structured distribution grid
@@ -320,6 +322,7 @@ def known_topology_constraints(
         when topology is known for buses/lines in {1, ..., known_bus_topo}
     - known_line_params: int in [0, known_bus_topo], when line parameters
         (little x_{ij}) are known ∀ i,j in {1, ..., known_line_params}
+
     Returns: list of cp.Constraints
     """
     assert known_bus_topo >= 0
