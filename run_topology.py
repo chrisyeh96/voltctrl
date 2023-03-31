@@ -300,14 +300,15 @@ def wrap_write_newlines(f: Any) -> Any:
 
 if __name__ == '__main__':
     all_nodes = np.arange(55)
-    exclude = np.array([9, 19, 22, 31, 40, 46, 55]) - 2
-    obs_nodes = np.setdiff1d(all_nodes, exclude).tolist()
-    for seed in [8,9,10,11]: #[8, 9, 10, 11]:
+    # exclude = np.array([9, 19, 22, 31, 40, 46, 55]) - 2
+    # obs_nodes = np.setdiff1d(all_nodes, exclude).tolist()
+    obs_nodes = None
+    for seed in [11,]: #[8, 9, 10, 11]:
         run(
             epsilon=0.1,
             q_max=0.24,
             cbc_alg='proj',
-            eta= 20, # 8.65,
+            eta= 12,
             norm_bound=1.0,
             norm_bound_init=None,
             noise=1.0,
@@ -319,5 +320,5 @@ if __name__ == '__main__':
             seed=seed,
             pbar=tqdm(),
             is_interactive=False,
-            savedir='out-nonlinear-full',
+            savedir='out-nonlinear-full-small-extra',
             tag='_fullctrl_adaptive_topo14line14')
