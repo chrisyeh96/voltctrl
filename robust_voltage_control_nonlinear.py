@@ -1,18 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 import io
+import os
 from typing import Any
 
 import cvxpy as cp
 import numpy as np
+import scipy.io as spio
 from tqdm.auto import tqdm
 
 from network_utils import np_triangle_norm
 from voltplot import VoltPlot
-import scipy.io as spio
-from random import sample
-import os
-
 
 
 # ==== BEGINNING OF NONLINEAR MODIFICATIONS: loading data ====
@@ -74,7 +73,8 @@ def robust_voltage_control(
         log: tqdm | io.TextIOBase | None = None,
         volt_plot: VoltPlot | None = None, volt_plot_update: int = 100,
         save_Xhat_every: int = 100
-        ) -> tuple[np.ndarray, np.ndarray, dict[str, list], dict[int, np.ndarray]]:
+        ) -> tuple[np.ndarray, np.ndarray, dict[str, list],
+                   dict[int, np.ndarray], dict[str, list]]:
     """Runs robust voltage control.
 
     Args
@@ -113,7 +113,8 @@ def robust_voltage_control(
         - 'prev': list of float, ||X̂(t)-X̂(t-1)||_△ after each model update
     - X_hats: dict, keys are time steps, values are np.array, shape [n, n]
         - X_hats[t] is the estimated model after observing vs[t], qcs[t]
-    - check_prediction: dict, keys are adaptive_linear and fixed_optimal_linear that contains the list of prediction error (scalars)
+    - check_prediction: dict, maps keys ('adaptive_linear', 'fixed_optimal_linear')
+        to lists of prediction error (scalars)
     """
     assert p.shape == qe.shape
     T, n = qe.shape
@@ -201,7 +202,7 @@ def robust_voltage_control(
             satisfied, msg = sel._check_newest_obs(t, X)
             if (t+1) % save_Xhat_every == 0:
                 X_hats[t] = np.array(X̂.value)  # save a copy
-                
+
             if not satisfied:
                 # print(msg)
                 log.write(f't={t} linear X does not satisfy the nonlinear constraints: {msg}')
@@ -227,13 +228,13 @@ def robust_voltage_control(
         # ==== BEGINNING OF NONLINEAR MODIFICATIONS ====
         # vs[t+1] = vpars[t+1] + (qc_next.value) @ X
         # print('linear: ', np.linalg.norm(vs[t+1]))
-        vs[t+1], _, _ = env.step_load_solar((qc_next.value), load_p[:,t], load_q[:,t],
-                                                       gen_p[:,t], gen_q[:,t])
+        vs[t+1], _, _ = env.step_load_solar(
+            qc_next.value, load_p[:,t], load_q[:,t], gen_p[:,t], gen_q[:,t])
         vs[t+1] = (12. * vs[t+1])**2
-        check_prediction['fixed_optimal_linear'].append(np.linalg.norm(vs[t+1]-(nonlinear_vpars[t+1] + (
-            qc_next.value) @ X)))
-        check_prediction['adaptive_linear'].append(np.linalg.norm(vs[t+1]-(nonlinear_vpars[t+1] + (qc_next.value) @
-                                                                  X̂.value)))
+        check_prediction['fixed_optimal_linear'].append(
+            np.linalg.norm(vs[t+1] - (nonlinear_vpars[t+1] + qc_next.value @ X)))
+        check_prediction['adaptive_linear'].append(
+            np.linalg.norm(vs[t+1] - (nonlinear_vpars[t+1] + qc_next.value @ X̂.value)))
         # print('nonlinear: ', np.linalg.norm(vs[t+1]))
         # ==== END OF NONLINEAR MODIFICATIONS ====
 

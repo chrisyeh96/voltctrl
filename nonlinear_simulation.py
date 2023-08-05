@@ -1,26 +1,13 @@
+import gym
 import numpy as np
 from numpy import linalg as LA
-import gym
-import os
-import random
-import sys
-from gym import spaces
-from gym.utils import seeding
-import copy
-
-from scipy.io import loadmat
 import pandapower as pp
-import pandapower.networks as pn
-import pandas as pd
-import math
-import cvxpy as cp
-
 
 
 class VoltageCtrl_nonlinear(gym.Env):
     def __init__(self, pp_net, vmax, vmin, v0, injection_bus, obs_dim=55, action_dim=55):
 
-        self.network =  pp_net
+        self.network = pp_net
         self.injection_bus = injection_bus
         self.agentnum = len(injection_bus)
 
@@ -36,7 +23,7 @@ class VoltageCtrl_nonlinear(gym.Env):
         self.gen0_p = np.copy(self.network.sgen['p_mw'])
         self.gen0_q = np.copy(self.network.sgen['q_mvar'])
 
-        self.state = np.ones(self.agentnum, )
+        self.state = np.ones(self.agentnum)
 
     def step(self, action):
         "State transition dynamics: it takes in the reactive power setpoint"
@@ -55,7 +42,6 @@ class VoltageCtrl_nonlinear(gym.Env):
         self.state = self.network.res_bus.iloc[self.injection_bus].vm_pu.to_numpy()
 
         return self.state, reward, done
-
 
     def step_load_solar(self, action, load_p, load_q, gen_p, gen_q):
         "State transition dynamics: it takes in the reactive power setpoint, load_p and load_q"
@@ -86,7 +72,6 @@ class VoltageCtrl_nonlinear(gym.Env):
         self.network.sgen['q_mvar'] = 0.0
         self.network.load['p_mw'] = 0.0
         self.network.load['q_mvar'] = 0.0
-
 
         pp.runpp(self.network, algorithm='bfsw')
         self.state = self.network.res_bus.iloc[self.injection_bus].vm_pu.to_numpy()
