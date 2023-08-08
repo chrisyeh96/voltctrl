@@ -9,6 +9,7 @@ import numpy as np
 from tqdm.auto import tqdm
 
 from network_utils import np_triangle_norm
+from utils import solve_prob
 from voltplot import VoltPlot
 
 
@@ -46,6 +47,7 @@ def robust_voltage_control(
     - sel: nested convex body chasing object (e.g., CBCProjection)
     - ctrl_nodes: list of int, nodes that we can control voltages for
     - pbar: optional tqdm, progress bar
+    - log: optional log output
     - volt_plot: VoltPlot
     - volt_plot_update: int, time steps between updating volt_plot
     - save_Xhat_every: int, time steps between saving estimated Xhat model
@@ -68,7 +70,7 @@ def robust_voltage_control(
     if log is None:
         log = tqdm()
 
-    log.write(f'||X||_△ = {np_triangle_norm(X):.2f}')
+    log.write(f'‖X‖_△ = {np_triangle_norm(X):.2f}')
 
     dists: dict[str, list] = {'t': [], 'true': [], 'prev': []}
     X̂_prev = None
@@ -97,8 +99,8 @@ def robust_voltage_control(
     slack = cp.Variable(nonneg=True)
 
     # parameters are placeholders for given values
-    vt = cp.Parameter((n,))
-    qct = cp.Parameter((n,))
+    vt = cp.Parameter(n)
+    qct = cp.Parameter(n)
     X̂ = cp.Parameter((n, n), PSD=True)
     # if eta is None:
     #     eta = cp.Parameter(nonneg=True)
@@ -149,21 +151,12 @@ def robust_voltage_control(
         qct.value = qcs[t]
         vt.value = vs[t]
 
-        try:
-            prob.solve(warm_start=True, solver=cp.MOSEK, mosek_params={'MSK_IPAR_NUM_THREADS': 1})
-        except cp.SolverError:
-            log.write(f't={t}. robust oracle: default solver failed. Trying cp.ECOS')
-            prob.solve(solver=cp.ECOS)
-        if prob.status != 'optimal':
-            log.write(f't={t}. robust oracle: prob.status = {prob.status}')
-            if 'infeasible' in prob.status:
-                import pdb
-                pdb.set_trace()
+        solve_prob(prob, log=log, name=f't={t}. robust oracle')
 
         qcs[t+1] = qc_next.value
         vs[t+1] = vpars[t+1] + qc_next.value @ X
         sel.add_obs(t+1)
-        # log.write(f't = {t}, ||u||_1 = {np.linalg.norm(u.value, 1)}')
+        # log.write(f't = {t}, ‖u‖_1 = {np.linalg.norm(u.value, 1)}')
 
         if volt_plot is not None and (t+1) % volt_plot_update == 0:
             volt_plot.update(qcs=qcs[:t+2],

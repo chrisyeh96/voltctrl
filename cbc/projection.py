@@ -10,8 +10,36 @@ from tqdm.auto import tqdm
 
 from cbc.base import CBCBase, cp_triangle_norm_sq
 from network_utils import make_pd_and_pos
+from utils import solve_prob
 
-Constraint = cp.constraints.constraint.Constraint
+
+def check_informative(t: int, b: np.ndarray, c: np.ndarray,
+                      useful: np.ndarray) -> None:
+    """Checks whether b[t], c[t] are useful.
+
+    Args
+    - t: int
+    - b, c: np.ndarray, shape [T, n]
+    - useful: np.ndarray, shape [2, T], boolean indexing vector
+        - 1st row is for lower bound, 2nd row is for upper bound
+    """
+    # manage constraints of the form: d <= b - X c
+    # - each previous point (b',c') is useful if (b' ⋡ b) or (c' ⋠ c)
+    # - new point is useful if no other point has (b' ≼ b and c' ≽ c)
+    useful_lb = useful[0]
+    cmp_b = (b[t] >= b[useful_lb])
+    cmp_c = (c[t] <= c[useful_lb])
+    useful_lb[useful_lb] = np.any(cmp_b, axis=1) | np.any(cmp_c, axis=1)
+    useful_lb[t] = ~np.any(np.all(cmp_b, axis=1) & np.all(cmp_c, axis=1))
+
+    # manage constraints of the form: b - X c <= d
+    # - each previous point (b',c') is useful if (b' ⋠ b) or (c' ⋡ c)
+    # - new point is useful if no other point has (b' ≽ b and c' ≼ c)
+    useful_ub = useful[1]
+    cmp_b = (b[t] <= b[useful_ub])
+    cmp_c = (c[t] >= c[useful_ub])
+    useful_ub[useful_ub] = np.any(cmp_b, axis=1) | np.any(cmp_c, axis=1)
+    useful_ub[t] = ~np.any(np.all(cmp_b, axis=1) & np.all(cmp_c, axis=1))
 
 
 class CBCProjection(CBCBase):
@@ -19,7 +47,7 @@ class CBCProjection(CBCBase):
     that noise bound (eta) is known.
     """
     def __init__(self, n: int, T: int, X_init: np.ndarray, v: np.ndarray,
-                 gen_X_set: Callable[[cp.Variable], list[Constraint]],
+                 gen_X_set: Callable[[cp.Variable], list[cp.Constraint]],
                  eta: float, nsamples: int, alpha: float,
                  Vpar: tuple[np.ndarray, np.ndarray],
                  X_true: np.ndarray,
@@ -43,12 +71,12 @@ class CBCProjection(CBCBase):
         self.nsamples = nsamples
         self.alpha = alpha
 
-        self.w_inds = np.zeros([2, T-1], dtype=bool)  # whether each (u(t), delta_v(t)) is useful
+        self.w_inds = np.zeros([2, T-1], dtype=bool)  # whether each (u(t), Δv(t)) is useful
         self.vpar_inds = np.zeros([2, T], dtype=bool)  # whether each (v(t), q(t)) is useful
         self.w_inds[:, 0] = True
         self.vpar_inds[:, 1] = True
 
-        self.var_slack_w = cp.Variable(nonneg=True)  # nonneg=True
+        self.var_slack_w = cp.Variable(nonneg=True)
         self.Vpar_min, self.Vpar_max = Vpar
 
         self._setup_prob()
@@ -65,39 +93,39 @@ class CBCProjection(CBCBase):
         X = self.var_X
         slack_w = self.var_slack_w
 
-        constrs = self.X_set
+        constrs = self.X_set[:]  # make a shallow copy
         obs = self.obs_nodes
         self.param = {}
 
         Xprev = cp.Parameter((n, n), PSD=True, name='Xprev')
         for b in ['lb', 'ub']:
             vs = cp.Parameter((self.nsamples, n), name=f'vs_{b}')
-            delta_vs = cp.Parameter((self.nsamples, n), name=f'delta_vs_{b}')
+            Δvs = cp.Parameter((self.nsamples, n), name=f'Δvs_{b}')
             us = cp.Parameter((self.nsamples, n), name=f'us_{b}')
             qs = cp.Parameter((self.nsamples, n), name=f'qs_{b}')
 
-            w_hats = delta_vs - us @ X
+            ŵs = Δvs - us @ X
             vpar_hats = vs - qs @ X
 
             if b == 'lb':
                 constrs.extend([
-                    lb - slack_w <= w_hats,
+                    lb - slack_w <= ŵs,
                     self.Vpar_min[None, obs] <= vpar_hats[:, obs]
                 ])
             else:
                 constrs.extend([
-                    w_hats <= ub + slack_w,
+                    ŵs <= ub + slack_w,
                     vpar_hats[:, obs] <= self.Vpar_max[None, obs]
                 ])
 
             self.param[f'vs_{b}'] = vs
-            self.param[f'delta_vs_{b}'] = delta_vs
+            self.param[f'Δvs_{b}'] = Δvs
             self.param[f'us_{b}'] = us
             self.param[f'qs_{b}'] = qs
         self.param['Xprev'] = Xprev
 
-        # constrs = self.X_set + [
-        #     lb - slack_w <= w_hats, w_hats <= ub + slack_w,
+        # constrs = self.X_set[:]  # make a shallow copy + [
+        #     lb - slack_w <= ŵs, ŵs <= ub + slack_w,
         #     self.Vpar_min[None, :] <= vpar_hats, vpar_hats <= self.Vpar_max[None, :]
         # ]
 
@@ -111,44 +139,16 @@ class CBCProjection(CBCBase):
 
         # self.param_Xprev = Xprev
         # self.param_vs = vs
-        # self.param_delta_vs = delta_vs
+        # self.param_Δvs = Δvs
         # self.param_us = us
         # self.param_qs = qs
-
-    def _check_informative(self, t: int, b: np.ndarray, c: np.ndarray,
-                           useful: np.ndarray) -> None:
-        """Checks whether b[t], c[t] are useful.
-
-        Args
-        - t: int
-        - b, c: np.ndarray, shape [T, n]
-        - useful: np.ndarray, shape [2, T], boolean indexing vector
-            - 1st row is for lower bound, 2nd row is for upper bound
-        """
-        # manage constraints of the form: d <= b - X c
-        # - each previous point (b',c') is useful if (b' ⋡ b) or (c' ⋠ c)
-        # - new point is useful if no other point has (b' ≼ b and c' ≽ c)
-        useful_lb = useful[0]
-        cmp_b = (b[t] >= b[useful_lb])
-        cmp_c = (c[t] <= c[useful_lb])
-        useful_lb[useful_lb] = np.any(cmp_b, axis=1) | np.any(cmp_c, axis=1)
-        useful_lb[t] = ~np.any(np.all(cmp_b, axis=1) & np.all(cmp_c, axis=1))
-
-        # manage constraints of the form: b - X c <= d
-        # - each previous point (b',c') is useful if (b' ⋠ b) or (c' ⋡ c)
-        # - new point is useful if no other point has (b' ≽ b and c' ≼ c)
-        useful_ub = useful[1]
-        cmp_b = (b[t] <= b[useful_ub])
-        cmp_c = (c[t] >= c[useful_ub])
-        useful_ub[useful_ub] = np.any(cmp_b, axis=1) | np.any(cmp_c, axis=1)
-        useful_ub[t] = ~np.any(np.all(cmp_b, axis=1) & np.all(cmp_c, axis=1))
 
     def add_obs(self, t: int) -> None:
         """
         Args
         - t: int, current time step (>=1), v[t] and q[t] have just been updated
         """
-        # update self.u and self.delta_v
+        # update self.u and self.Δv
         super().add_obs(t)
 
         if self.is_cached:
@@ -158,39 +158,30 @@ class CBCProjection(CBCBase):
                 self.log.write(f't = {t:6d}, CBC pre opt: {msg}')
 
         if t >= 2:
-            self._check_informative(t=t-1, b=self.delta_v, c=self.u, useful=self.w_inds)
-            self._check_informative(t=t, b=self.v, c=self.q, useful=self.vpar_inds)
-
-        # cmp_delta = (delta_v <= self.delta_v[self.w_inds_ub])
-        # cmp_u = (u >= self.us[self.w_inds_ub])
-        # self.w_inds_ub[self.w_inds_ub] = np.any(cmp_delta, axis=1) | np.any(cmp_u, axis=1)
-        # self.w_inds_ub[t] = ~np.any(np.all(cmp_delta, axis=1) & np.all(cmp_u, axis=1))
-
-        # cmp_v = (v <= self.v[self.vpar_inds_ub])
-        # cmp_q = (q >= self.q[self.vpar_inds_ub])
-        # self.vpar_inds_ub[self.self.vpar_inds_ub] = np.any(cmp_v, axis=1) | np.any(cmp_u, axis=1)
-        # self.vpar_inds_ub[t] = ~np.any(np.all(cmp_delta, axis=1) & np.all(cmp_u, axis=1))
+            check_informative(t=t-1, b=self.Δv, c=self.u, useful=self.w_inds)
+            check_informative(t=t, b=self.v, c=self.q, useful=self.vpar_inds)
 
         if t % 500 == 0:
             num_w_inds = tuple(np.sum(self.w_inds[:t], axis=1))
             num_vpar_inds = tuple(np.sum(self.vpar_inds[:t+1], axis=1))
             self.log.write(f'active constraints - w: {num_w_inds}/{t}, vpar: {num_vpar_inds}/{t}')
 
-    def _check_newest_obs(self, t: int, X_test = None) -> tuple[bool, str]:
-        """Checks whether self.X_cache satisfies the newest observation:
-        (v[t], q[t], u[t-1], delta_v[t-1])
+    def _check_newest_obs(self, t: int, X_test: np.ndarray | None = None) -> tuple[bool, str]:
+        """Checks whether self.X_cache (or X_test, if given) satisfies the
+        newest observation: (v[t], q[t], u[t-1], Δv[t-1])
+
+        Even when CVXPY solves SEL to optimality, empirically it may still have
+        up to 0.05 of constraint violation, so we allow for that here.
 
         Returns
         - satisfied: bool, whether self.X_cache satisfies the newest observation
         - msg: str, (if not satisfied) describes which constraints are not satisfied,
             (if satisfied) is empty string ''
         """
-        if X_test is None:
-            X = self.X_cache
-        else:
-            X = X_test
+        X = self.X_cache if X_test is None else X_test
+
         obs = self.obs_nodes
-        w_hat = self.delta_v[t-1] - self.u[t-1] @ X
+        w_hat = self.Δv[t-1] - self.u[t-1] @ X
         vpar_hat = self.v[t] - self.q[t] @ X
         w_hat_norm = np.max(np.abs(w_hat[obs]))
 
@@ -209,12 +200,13 @@ class CBCProjection(CBCBase):
         return satisfied, msg
 
     def select(self, t: int) -> np.ndarray:
-        """
+        """Selects the closest consistent model.
+
         We have seen t observations. That is, we have values for:
           v(0), ...,   v(t)    # recall:   v(t) = vs[t]
         q^c(0), ..., q^c(t)    # recall: q^c(t) = qs[t]
           u(0), ...,   u(t-1)  # recall:   u(t) = us[t]
-         Δv(0), ...,  Δv(t-1)  # recall:  Δv(t) = delta_vs[t]
+         Δv(0), ...,  Δv(t-1)  # recall:  Δv(t) = Δvs[t]
 
         It is possible that t=0, meaning we haven't seen any observations yet.
         (We have v(0) and q^c(0), but not u(0) or Δv(0).) In this case, our
@@ -222,6 +214,9 @@ class CBCProjection(CBCBase):
 
         Args
         - t: int, current time step (>=0)
+
+        Returns:
+        - Xhat: np.ndarray, shape [n, n], consistent model
         """
         # be lazy if self.X_cache already satisfies the newest obs.
         if self.is_cached:
@@ -229,14 +224,12 @@ class CBCProjection(CBCBase):
 
         indent = ' ' * 11
 
-        n = self.n
-        ub = self.eta  # * np.ones([n, 1])
-        lb = -ub
-
         # optimization variables
-        # - assuming that assumptions 1, 2, and the first part of 3
+        # - If assumptions 1, 2, and the first part of 3
         #     ($\forall t: \vpar(t) \in \Vpar$) are satisfied, we don't need
-        #     actually need a slack variable in SEL (the CBC algorithm)
+        #     need a slack variable in SEL (the CBC algorithm). However, in
+        #     practice, it is often difficult to check these assumptions, so we
+        #     include a slack variable in case of infeasibility.
         X = self.var_X
         slack_w = self.var_slack_w
 
@@ -245,7 +238,7 @@ class CBCProjection(CBCBase):
             for b in ['lb', 'ub']:
                 self.param[f'vs_{b}'].value = np.tile(self.Vpar_min, [self.nsamples, 1])
                 self.param[f'vs_{b}'].value[:t] = self.v[1:1+t]
-                self.param[f'delta_vs_{b}'].value = self.delta_v[:self.nsamples]
+                self.param[f'Δvs_{b}'].value = self.Δv[:self.nsamples]
                 self.param[f'us_{b}'].value = self.u[:self.nsamples]
                 self.param[f'qs_{b}'].value = self.q[1:1+self.nsamples]
 
@@ -266,7 +259,7 @@ class CBCProjection(CBCBase):
                     w_inds[-k:],
                     self.rng.choice(len(w_inds) - k, size=self.nsamples-k, replace=False)
                 ])
-                self.param[f'delta_vs_{b}'].value = self.delta_v[ts]
+                self.param[f'Δvs_{b}'].value = self.Δv[ts]
                 self.param[f'us_{b}'].value = self.u[ts]
 
                 vpar_inds = self.vpar_inds[i, :t+1].nonzero()[0]
@@ -278,28 +271,15 @@ class CBCProjection(CBCBase):
                 self.param[f'qs_{b}'].value = self.q[ts]
 
             # self.param_vs.value = self.v[ts+1]
-            # self.param_delta_vs.value = self.delta_v[ts]
+            # self.param_Δvs.value = self.Δv[ts]
             # self.param_us.value = self.us[ts]
             # self.param_qs.value = self.q[ts+1]
 
         # self.param_Xprev.value = self.X_cache
         self.param['Xprev'].value = self.X_cache
 
-        prob = self.prob
-        prob.solve(
-            solver=cp.MOSEK,
-            warm_start=True
-            # eps=0.05,  # SCS convergence tolerance (1e-4)
-            # max_iters=300,  # SCS max iterations (2500)
-            # abstol=0.1, # ECOS (1e-8) / CVXOPT (1e-7) absolute accuracy
-            # reltol=0.1 # ECOS (1e-8) / CVXOPT (1e-6) relative accuracy
-        )
+        solve_prob(self.prob, log=self.log, name='CBC', indent=indent)
 
-        if prob.status != 'optimal':
-            self.log.write(f'{indent} CBC prob.status = {prob.status}')
-            if prob.status == 'infeasible':
-                import pdb
-                pdb.set_trace()
         self.X_cache = np.array(X.value)  # make a copy
         make_pd_and_pos(self.X_cache)
         self.is_cached = True

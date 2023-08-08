@@ -12,7 +12,7 @@ import numpy as np
 import pandapower as pp
 from tqdm.auto import tqdm
 
-from cbc.base import CBCBase, cp_triangle_norm_sq, project_into_X_set
+from cbc.base import CBCBase, CBCConst, cp_triangle_norm_sq, project_into_X_set
 from cbc.projection import CBCProjection
 from cbc.steiner import CBCSteiner
 from network_utils import (
@@ -31,8 +31,6 @@ os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
-Constraint = cp.constraints.constraint.Constraint
-
 # hide top and right splines on plots
 plt.rcParams['axes.spines.right'] = False
 plt.rcParams['axes.spines.top'] = False
@@ -42,13 +40,13 @@ def meta_gen_X_set(norm_bound: float, X_true: np.ndarray,
                    net: pp.pandapowerNet,
                    known_bus_topo: int = 0,
                    known_line_params: int = 0
-                   ) -> Callable[[cp.Variable], list[Constraint]]:
+                   ) -> Callable[[cp.Variable], list[cp.Constraint]]:
     """Creates a function that, given a cp.Variable representing X,
     returns constraints that describe its uncertainty set 𝒳.
 
     Args
     - norm_bound: parameter c such that
-        ||var_X - X*||_△ <= c * ||X*||_△
+        ‖var_X - X*‖_△ <= c * ‖X*‖_△
     - X_true: shape [n, n], PSD
     - known_bus_topo: int in [0, n], n = # of buses (excluding substation),
         when topology is known for buses/lines in {0, ..., known_bus_topo-1}
@@ -59,14 +57,14 @@ def meta_gen_X_set(norm_bound: float, X_true: np.ndarray,
     """
     assert known_line_params <= known_bus_topo
 
-    def gen_𝒳(var_X: cp.Variable) -> list[Constraint]:
+    def gen_𝒳(var_X: cp.Variable) -> list[cp.Constraint]:
         """Returns constraints describing 𝒳, the uncertainty set for X.
 
         Constraints:
         (1) var_X is PSD (enforced at cp.Variable initialization)
         (2) var_X is entry-wise nonnegative
         (3) largest entry in each row/col of var_X is on the diagonal
-        (4) ||var_X - X*|| <= c * ||X*||
+        (4) ‖var_X - X*‖_△ <= c * ‖X*‖_△
 
         Note: Constraint (1) does NOT automatically imply (3). See, e.g.,
             https://math.stackexchange.com/a/3331028. Also related:
@@ -94,7 +92,7 @@ def meta_gen_X_set(norm_bound: float, X_true: np.ndarray,
                 var_X, net, known_line_params, known_bus_topo)
             𝒳.extend(topo_constraints)
 
-        tqdm.write('𝒳 = {X: ||X̂-X||_△ <= ' + f'{norm_bound * norm_X}' + '}')
+        tqdm.write('𝒳 = {X: ‖X̂-X‖_△ <= ' + f'{norm_bound * norm_X}' + '}')
         return 𝒳
     return gen_𝒳
 
@@ -114,7 +112,7 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
     - epsilon: float, robustness
     - q_max: float, maximum reactive power injection
     - cbc_alg: str, one of ['const', 'proj', 'steiner']
-    - eta: float, maximum ||w||∞
+    - eta: float, maximum ‖w‖∞
     - norm_bound: float, size of uncertainty set
     - norm_bound_init: float or None, norm of uncertainty set from which
         X_init is sampled
@@ -212,13 +210,14 @@ def run(epsilon: float, q_max: float, cbc_alg: str, eta: float,
         X_init = var_X.value
 
     gen_X_set = meta_gen_X_set(
-            norm_bound=norm_bound, X_true=X, net=net,
-            known_bus_topo=known_bus_topo, known_line_params=known_line_params)
+        norm_bound=norm_bound, X_true=X, net=net,
+        known_bus_topo=known_bus_topo, known_line_params=known_line_params)
 
+    sel: CBCBase
     if cbc_alg == 'const':
-        sel = CBCBase(n=n, T=T, X_init=X_init, v=vpars[start],
-                      gen_X_set=gen_X_set, X_true=X, obs_nodes=obs_nodes,
-                      log=log)
+        sel = CBCConst(n=n, T=T, X_init=X_init, v=vpars[start],
+                       gen_X_set=gen_X_set, X_true=X, obs_nodes=obs_nodes,
+                       log=log)
     elif cbc_alg == 'proj':
         params.update(alpha=alpha, nsamples=nsamples)
         sel = CBCProjection(

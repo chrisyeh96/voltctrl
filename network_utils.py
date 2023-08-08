@@ -301,7 +301,7 @@ def calc_max_norm_w(R: np.ndarray, X: np.ndarray, p: np.ndarray, qe: np.ndarray
 
 def np_triangle_norm(x: np.ndarray) -> float:
     """Computes ||X||_△"""
-    return np.linalg.norm(np.triu(x), ord='fro')
+    return float(np.linalg.norm(np.triu(x), ord='fro'))
 
 
 def known_topology_constraints(

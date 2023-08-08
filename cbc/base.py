@@ -3,14 +3,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 import io
+from typing import Any
 
 import cvxpy as cp
 import numpy as np
 from tqdm.auto import tqdm
 
 from network_utils import make_pd_and_pos, np_triangle_norm
-
-Constraint = cp.constraints.constraint.Constraint
+from utils import solve_prob
 
 
 def cp_triangle_norm_sq(x: cp.Expression) -> cp.Expression:
@@ -19,7 +19,7 @@ def cp_triangle_norm_sq(x: cp.Expression) -> cp.Expression:
 
 def project_into_X_set(X_init: np.ndarray, var_X: cp.Variable,
                        log: tqdm | io.TextIOBase | None,
-                       X_set: list[Constraint], X_true: np.ndarray) -> None:
+                       X_set: list[cp.Constraint], X_true: np.ndarray) -> None:
     """Project X_init into 𝒳 if necessary."""
     if log is not None:
         norm = np_triangle_norm(X_init)
@@ -35,12 +35,7 @@ def project_into_X_set(X_init: np.ndarray, var_X: cp.Variable,
             log.write(f'X_init invalid. Violation: {total_violation:.3f}. Projecting into 𝒳.')
         obj = cp.Minimize(cp_triangle_norm_sq(X_init - var_X))
         prob = cp.Problem(objective=obj, constraints=X_set)
-        try:
-            prob.solve(solver=cp.MOSEK)
-        except cp.error.SolverError as e:
-            if log is not None:
-                log.write(str(e))
-            prob.solve(solver=cp.SCS)
+        solve_prob(prob, log=log, name='projecting X_init into 𝒳')
         make_pd_and_pos(var_X.value)
         if log is not None:
             total_violation = sum(np.sum(constraint.violation()) for constraint in X_set)
@@ -76,7 +71,7 @@ class CBCBase:
             sel.update(t+1)
     """
     def __init__(self, n: int, T: int, X_init: np.ndarray, v: np.ndarray,
-                 gen_X_set: Callable[[cp.Variable], list[Constraint]],
+                 gen_X_set: Callable[[cp.Variable], list[cp.Constraint]],
                  X_true: np.ndarray,
                  obs_nodes: Sequence[int] | None = None,
                  log: tqdm | io.TextIOBase | None = None):
@@ -105,7 +100,7 @@ class CBCBase:
         # history
         self.v = np.zeros([T, n])  # v[t] = v(t)
         self.v[0] = v
-        self.delta_v = np.zeros([T-1, n])  # delta_v[t] = v(t+1) - v(t)
+        self.Δv = np.zeros([T-1, n])  # Δv[t] = v(t+1) - v(t)
         self.u = np.zeros([T-1, n])  # u[t] = u(t) = q^c(t+1) - q^c(t)
         self.q = np.zeros([T, n])  # q[t] = q^c(t)
 
@@ -136,17 +131,27 @@ class CBCBase:
         """
         assert t >= 1
         self.u[t-1] = self.q[t] - self.q[t-1]
-        self.delta_v[t-1] = self.v[t] - self.v[t-1]
+        self.Δv[t-1] = self.v[t] - self.v[t-1]
 
-    def select(self, t: int) -> np.ndarray:
-        """
-        Args
-        - t: int, current time step
+    def select(self, t: int) -> Any:
+        """Selects a model.
 
         When select() is called, we have seen t observations. That is, we have values for:
           v(0), ...,   v(t)    # recall:   v(t) = vs[t]
         q^c(0), ..., q^c(t)    # recall: q^c(t) = qs[t]
           u(0), ...,   u(t-1)  # recall:   u(t) = us[t]
-         Δv(0), ...,  Δv(t-1)  # recall:  Δv(t) = delta_vs[t]
+         Δv(0), ...,  Δv(t-1)  # recall:  Δv(t) = Δvs[t]
+
+        Args
+        - t: int, current time step
         """
+        raise NotImplementedError
+
+
+class CBCConst(CBCBase):
+    """CBC class that always returns the initial X.
+
+    Does not actually perform any model chasing.
+    """
+    def select(self, t: int) -> np.ndarray:
         return self.X_init
