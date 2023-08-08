@@ -226,10 +226,11 @@ def update_dists(dists: dict[str, list], t: int,
             return
 
     dists['t'].append(t)
+    msg = f't = {t:6d}'
 
     if δ > 0:
         dXη = np_triangle_delta_norm(X̂ - X, etahat - η, δ)
-        msg = f't = {t:6d}, ‖(X̂,̂η)-(X,η)‖_(△,δ) = {dXη:7.3f}'
+        msg += f', ‖(X̂,̂η)-(X,η)‖_(△,δ) = {dXη:7.3f}'
         dists['X_η_true'] = dXη
 
         dη = np.abs(etahat - η)
@@ -248,7 +249,7 @@ def update_dists(dists: dict[str, list], t: int,
         dists['η_prev'] = dη
 
     dX = np_triangle_norm(X̂ - X)
-    msg = f't = {t:6d}, ‖X̂-X‖_△ = {dX:7.3f}'
+    msg += f', ‖X̂-X‖_△ = {dX:7.3f}'
     dists['X_true'].append(dX)
 
     if X̂_prev is None:
