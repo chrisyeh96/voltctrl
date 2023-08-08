@@ -297,151 +297,154 @@ class CBCProjection(CBCBase):
         return np.array(self.X_cache)  # return a copy
 
 
+class CBCProjectionWithNoise(CBCProjection):
+    def __init__(self, n: int, T: int, X_init: np.ndarray, v: np.ndarray,
+                 gen_X_set: Callable[[cp.Variable], list[cp.Constraint]],
+                 eta: float, nsamples: int, alpha: float, δ: float,
+                 Vpar: tuple[np.ndarray, np.ndarray],
+                 X_true: np.ndarray,
+                 obs_nodes: Sequence[int] | None = None,
+                 log: tqdm | io.TextIOBase | None = None, seed: int = 123):
+        """
+        Args:
+        - δ: float, weight of noise term in CBC norm
+        - all other args are the same as CBCProjection. However, here, we
+            interpret eta as an upper limit on true noise.
+        """
+        self.var_eta = cp.Variable(nonneg=True)
+        self.eta_max = eta  # upper limit on true noise
+        self.δ = δ
+        super().__init__(n, T, X_init, v, gen_X_set, eta, nsamples, alpha,
+                         Vpar, X_true, obs_nodes, log, seed)
+        self.eta = 0  # cached value
 
-# class CBCProjectionWithNoise(CBCProjection):
-#     def __init__(self, eta: float, n: int, T: int, nsamples: int,
-#                  alpha: float, v: np.ndarray, X_init: np.ndarray | None = None,
-#                  X_true: np.ndarray | None = None):
-#         """
-#         Same args as CBCProjection. However, here, we interpret eta as an upper
-#         limit on true noise.
-#         """
-#         super().__init__(eta, n, T, nsamples, alpha, v, X_init, X_true)
-#         self.var_eta = cp.Variable(nonneg=True)
-#         self.eta_cache = 0
+    def _setup_prob(self) -> None:
+        """Defines self.prob as the projection of Xprev into the consistent set.
+        """
+        n = self.n
+        ub = self.var_eta
+        lb = -ub
 
-#     def select(self) -> tuple[np.ndarray, float]:
-#         """
-#         When select() is called, we have seen self.t observations.
-#         """
-#         if self.is_cached:
-#             return self.X_cache, self.eta_cache
+        # optimization variables
+        X = self.var_X
+        var_eta = self.var_eta
+        slack_w = self.var_slack_w
 
-#         t = self.t
-#         assert t >= 1
+        constrs = self.X_set[:]  # make a shallow copy
+        constrs.append(var_eta <= self.eta_max)
+        obs = self.obs_nodes
+        self.param = {}
 
-#         # be lazy if self.X_cache already satisfies the newest obs.
-#         est_noise = self.delta_v[:, t-1] - self.X_cache @ self.u[:, t-1]
-#         # tqdm.write(f'est_noise: {np.max(np.abs(est_noise)):.3f}')
-#         if np.max(np.abs(est_noise)) <= self.eta_cache:
-#             # buf = self.eta - np.max(np.abs(est_noise))
-#             # self.lazy_buffer.append(buf)
-#             # tqdm.write('being lazy')
-#             self.is_cached = True
-#             return self.X_cache, self.eta_cache
+        Xprev = cp.Parameter((n, n), PSD=True, name='Xprev')
+        etaprev = cp.Parameter(nonneg=True, name='etaprev')
+        for b in ['lb', 'ub']:
+            vs = cp.Parameter((self.nsamples, n), name=f'vs_{b}')
+            Δvs = cp.Parameter((self.nsamples, n), name=f'Δvs_{b}')
+            us = cp.Parameter((self.nsamples, n), name=f'us_{b}')
+            qs = cp.Parameter((self.nsamples, n), name=f'qs_{b}')
 
-#         n = self.n
+            ŵs = Δvs - us @ X
+            vpar_hats = vs - qs @ X
 
-#         # optimization variables
-#         X = self.var_X
-#         slack = self.var_slack
-#         eta = self.var_eta
+            if b == 'lb':
+                constrs.extend([
+                    lb - slack_w <= ŵs,
+                    self.Vpar_min[None, obs] <= vpar_hats[:, obs]
+                ])
+            else:
+                constrs.extend([
+                    ŵs <= ub + slack_w,
+                    vpar_hats[:, obs] <= self.Vpar_max[None, obs]
+                ])
 
-#         ub = self.var_eta  # * np.ones([n, 1])
-#         lb = -ub
+            self.param[f'vs_{b}'] = vs
+            self.param[f'Δvs_{b}'] = Δvs
+            self.param[f'us_{b}'] = us
+            self.param[f'qs_{b}'] = qs
+        self.param['Xprev'] = Xprev
+        self.param['etaprev'] = etaprev
 
-#         # when t < self.nsamples, create a brand-new cp.Problem
-#         if t < self.nsamples:
-#             us = self.us[:, :t]
-#             delta_vs = self.delta_v[:, :t]
+        obj = cp.Minimize(cp_triangle_norm_sq(X-Xprev)
+                          + (self.δ * (var_eta - etaprev))**2
+                          + self.alpha * slack_w)
+        self.prob = cp.Problem(objective=obj, constraints=constrs)
 
-#             diffs = delta_vs - X @ us
-#             constrs = [X >= 0, lb <= diffs, diffs <= ub, eta <= self.eta]
-#             # constrs = [X >= 0, lb + slack <= diffs, diffs <= ub - slack,
-#             #            eta <= self.eta]
+        # if cp.Problem is DPP, then it can be compiled for speedup
+        # - http://cvxpy.org/tutorial/advanced/index.html#disciplined-parametrized-programming  # noqa
+        self.log.write(f'CBC prob is DPP?: {self.prob.is_dcp(dpp=True)}')
 
-#             obj = cp.Minimize(cp_triangle_norm_sq(X - self.X_cache)
-#                               + 1e3 * eta**2)
-#             # obj = cp.Minimize(cp_triangle_norm_sq(X - self.X_cache)
-#             #                   + (eta - self.eta_cache)**2 + eta**2)
-#             # obj = cp.Minimize(cp_triangle_norm_sq(X - self.X_cache)
-#             #                   + (eta - self.eta_cache)**2
-#             #                   - self.alpha * slack)
-#             prob = cp.Problem(objective=obj, constraints=constrs)
-#             prob.solve()
+    def select(self, t: int) -> tuple[np.ndarray, float]:  # type: ignore
+        """
+        When select() is called, we have seen t observations.
+        """
+        # be lazy if (self.X_cache, self.eta) already satisfies the newest obs.
+        if self.is_cached:
+            return self.X_cache, self.eta
 
-#         # when t >= self.nsamples, compile a fixed-size optimization problem
-#         else:
-#             if self.prob is None:
-#                 Xprev = cp.Parameter([n, n], nonneg=True, name='Xprev')
-#                 etaprev = cp.Parameter(nonneg=True, name='eta')
-#                 us = cp.Parameter([n, self.nsamples], name='us')
-#                 delta_vs = cp.Parameter([n, self.nsamples], name='delta_vs')
+        indent = ' ' * 11
 
-#                 diffs = delta_vs - X @ us
-#                 # constrs = [X >= 0, lb <= diffs, diffs <= ub, eta <= self.eta]
-#                 constrs = [X >= 0, lb + slack <= diffs, diffs <= ub - slack,
-#                            etaprev <= eta, eta <= self.eta]
+        # optimization variables
+        # - If assumptions 1, 2, and the first part of 3
+        #     ($\forall t: \vpar(t) \in \Vpar$) are satisfied, we don't need
+        #     need a slack variable in SEL (the CBC algorithm). However, in
+        #     practice, it is often difficult to check these assumptions, so we
+        #     include a slack variable in case of infeasibility.
+        X = self.var_X
+        var_eta = self.var_eta
+        slack_w = self.var_slack_w
 
-#                 obj = cp.Minimize(cp_triangle_norm_sq(X - Xprev)
-#                                   + 3e2 * eta**2
-#                                   - self.alpha * slack)
-#                 # obj = cp.Minimize(cp_triangle_norm_sq(X - Xprev)
-#                 #                   + (eta - etaprev)**2)
-#                 # obj = cp.Minimize(cp_triangle_norm_sq(X - Xprev)
-#                 #                   + (eta - etaprev)**2
-#                 #                   - self.alpha * slack)
-#                 self.prob = cp.Problem(objective=obj, constraints=constrs)
+        # when t < self.nsamples
+        if t < self.nsamples:
+            for b in ['lb', 'ub']:
+                self.param[f'vs_{b}'].value = np.tile(self.Vpar_min, [self.nsamples, 1])
+                self.param[f'vs_{b}'].value[:t] = self.v[1:1+t]
+                self.param[f'Δvs_{b}'].value = self.Δv[:self.nsamples]
+                self.param[f'us_{b}'].value = self.u[:self.nsamples]
+                self.param[f'qs_{b}'].value = self.q[1:1+self.nsamples]
 
-#                 # if CBC problem is DPP, then it can be compiled for speedup
-#                 # - see https://www.cvxpy.org/tutorial/advanced/index.html#disciplined-parametrized-programming  # noqa
-#                 tqdm.write(f'CBC prob is DPP?: {self.prob.is_dcp(dpp=True)}')
+        # when t >= self.nsamples
+        else:
+            # perform random sampling
+            # - use the most recent k time steps  [t-k, ..., t-1]
+            # - then sample additional previous time steps for self.nsamples total
+            #   [0, ..., t-k-1]
+            k = min(self.nsamples, 20)
 
-#                 self.param_Xprev = Xprev
-#                 self.param_etaprev = etaprev
-#                 self.param_us = us
-#                 self.param_delta_vs = delta_vs
+            for i, b in enumerate(['lb', 'ub']):
+                w_inds = self.w_inds[i, :t].nonzero()[0]
+                ts = np.concatenate([
+                    w_inds[-k:],
+                    self.rng.choice(len(w_inds) - k, size=self.nsamples-k, replace=False)
+                ])
+                self.param[f'Δvs_{b}'].value = self.Δv[ts]
+                self.param[f'us_{b}'].value = self.u[ts]
 
-#             prob = self.prob
+                vpar_inds = self.vpar_inds[i, :t+1].nonzero()[0]
+                ts = np.concatenate([
+                    vpar_inds[-k:],
+                    self.rng.choice(len(vpar_inds) - k, size=self.nsamples-k, replace=False)
+                ])
+                self.param[f'vs_{b}'].value = self.v[ts]
+                self.param[f'qs_{b}'].value = self.q[ts]
 
-#             # perform random sampling
-#             # - use the most recent k (<=5) time steps
-#             # - then sample additional previous time steps for 20 total
-#             k = min(self.nsamples, 5)
-#             sample_probs = np.linalg.norm(
-#                 self.delta_v[:, :t-k] - self.X_cache @ self.us[:, :t-k],
-#                 axis=0)
-#             sample_probs /= np.sum(sample_probs)
-#             ts = np.concatenate([
-#                 np.arange(t-k, t),
-#                 rng.choice(t-k, size=self.nsamples-k, replace=False,
-#                            p=sample_probs)
-#             ])
-#             self.param_us.value = self.us[:, ts]
-#             self.param_delta_vs.value = self.delta_v[:, ts]
+        self.param['Xprev'].value = self.X_cache
+        self.param['etaprev'].value = self.eta
 
-#             self.param_Xprev.value = self.X_cache
-#             self.param_etaprev.value = self.eta_cache
-#             prob.solve(warm_start=True)
+        solve_prob(self.prob, log=self.log, name='CBC', indent=indent)
 
-#         if prob.status != 'optimal':
-#             tqdm.write(f'CBC prob.status = {prob.status}')
-#             if prob.status == 'infeasible':
-#                 import pdb
-#                 pdb.set_trace()
-#         self.X_cache = np.array(X.value)  # make a copy
-#         self.eta_cache = float(eta.value)  # make a copy
+        self.X_cache = np.array(X.value)  # make a copy
+        self.eta = float(var_eta.value)  # make a copy
+        make_pd_and_pos(self.X_cache)
+        self.is_cached = True
 
-#         # Force symmetry, even if all-close. But only print error message if
-#         # not all-close.
-#         if not np.allclose(self.X_cache, self.X_cache.T):
-#             max_diff = np.max(np.abs(self.X_cache - self.X_cache.T))
-#             tqdm.write(f'optimal X not symmetric. ||X-X.T||_max = {max_diff}'
-#                        ' - making symmetric')
-#         self.X_cache = (self.X_cache + self.X_cache.T) / 2
+        # check slack variable
+        if slack_w.value > 0:
+            self.log.write(f'{indent} CBC slack: {slack_w.value:.3f}')
 
-#         # check for PSD
-#         w, V = np.linalg.eigh(self.X_cache)
-#         if np.any(w < 0):
-#             tqdm.write(f'optimal X not PSD. smallest eigenvalue = {np.min(w)}'
-#                        ' - setting neg eigenvalues to 0')
-#             w[w < 0] = 0
-#             self.X_cache = (V * w) @ V.T
+        # check whether constraints are satisfied for latest time step
+        # print('check if the new model is good.')
+        satisfied, msg = self._check_newest_obs(t)
+        if not satisfied:
+            self.log.write(f'{indent} CBC post opt: {msg}')
 
-#         if np.any(self.X_cache < 0):
-#             tqdm.write(f'optimal X has neg values. min={np.min(self.X_cache)}'
-#                        ' - applying ReLu')
-#             self.X_cache = np.maximum(0, self.X_cache)
-
-#         self.is_cached = True
-#         return (self.X_cache, self.eta_cache)
+        return np.array(self.X_cache), self.eta  # return a copy
