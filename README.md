@@ -7,6 +7,20 @@
 
 **California Institute of Technology and UC San Diego**
 
+## Getting started
+
+### Install packages
+
+1. Install [miniconda3](https://docs.conda.io/en/latest/miniconda.html).
+2. Install the `voltctrl` conda environment:
+    ```bash
+    conda env update -f env.yml --prune
+    ```
+3. Request a Mosek license ([link](https://www.mosek.com/products/academic-licenses/)). Upon receiving the license file (`mosek.lic`) in an email, create a folder `~/mosek` and copy the license file into that folder.
+
+### Running voltage control experiments
+
+TODO
 
 ## Data Files (in `/data`)
 
