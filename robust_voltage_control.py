@@ -97,7 +97,7 @@ def robust_voltage_control(
 
     q_norm_2 = np.linalg.norm(np.ones(n) * (q_max-q_min), ord=2)
     if δ > 0:  # learning eta
-        dists |= {'η_true': [], 'η_prev': [], 'X_η_true': [], 'X_η_prev': []}
+        dists |= {'η': [], 'η_prev': [], 'X_η_prev': []}
         etahat_prev = None
         rho = ε * δ / (1 + δ * q_norm_2)
         etahat = cp.Parameter(nonneg=True, name='̂η')
@@ -229,13 +229,13 @@ def update_dists(dists: dict[str, list], t: int,
     msg = f't = {t:6d}'
 
     if δ > 0:
-        dXη = np_triangle_delta_norm(X̂ - X, etahat - η, δ)
-        msg += f', ‖(X̂,̂η)-(X,η)‖_(△,δ) = {dXη:7.3f}'
-        dists['X_η_true'] = dXη
+        # dXη = np_triangle_delta_norm(X̂ - X, etahat - η, δ)
+        # msg += f', ‖(X̂,̂η)-(X,η)‖_(△,δ) = {dXη:7.3f}'
+        # dists['X_η_true'].append(dXη)
 
-        dη = np.abs(etahat - η)
-        msg += f', |̂η-η| = {dη:3.3f}'
-        dists['η_true'] = dη
+        # dη = np.abs(etahat - η)
+        # msg += f', |̂η-η| = {dη:3.3f}'
+        # dists['η_true'].append(dη)
 
         if X̂_prev is None:
             dXη = 0.
@@ -245,8 +245,9 @@ def update_dists(dists: dict[str, list], t: int,
             dη = np.abs(etahat - etahat_prev)
             msg += f', ‖(X̂,̂η)-(X̂,̂η)_prev‖_(△,δ) = {dXη:5.3f}'
             msg += f', |̂η-̂η_prev| = {dη:3.3f}'
-        dists['X_η_prev'] = dXη
-        dists['η_prev'] = dη
+        dists['X_η_prev'].append(dXη)
+        dists['η_prev'].append(dη)
+        dists['η'].append(etahat)
 
     dX = np_triangle_norm(X̂ - X)
     msg += f', ‖X̂-X‖_△ = {dX:7.3f}'

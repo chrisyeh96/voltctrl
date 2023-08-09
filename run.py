@@ -176,6 +176,7 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
     vpars = qe @ X + p @ R + v_sub  # shape [T, n]
     Vpar_min = np.min(vpars, axis=0)  # shape [n]
     Vpar_max = np.max(vpars, axis=0)  # shape [n]
+    Vpar = (Vpar_min, Vpar_max)
 
     Pv = 0.1
     Pu = 10
@@ -228,21 +229,20 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
             sel = CBCProjectionWithNoise(
                 n=n, T=T-start, X_init=X_init, v=vpars[start],
                 gen_X_set=gen_X_set, eta=eta, nsamples=nsamples, alpha=alpha,
-                δ=δ, Vpar=(Vpar_min, Vpar_max), X_true=X, obs_nodes=obs_nodes,
-                log=log, seed=seed)
+                δ=δ, Vpar=Vpar, X_true=X, obs_nodes=obs_nodes, log=log,
+                seed=seed)
         else:
             sel = CBCProjection(
                 n=n, T=T-start, X_init=X_init, v=vpars[start],
                 gen_X_set=gen_X_set, eta=eta, nsamples=nsamples, alpha=alpha,
-                Vpar=(Vpar_min, Vpar_max), X_true=X, obs_nodes=obs_nodes,
-                log=log, seed=seed)
+                Vpar=Vpar, X_true=X, obs_nodes=obs_nodes, log=log, seed=seed)
         save_dict.update(w_inds=sel.w_inds, vpar_inds=sel.vpar_inds)
     elif cbc_alg == 'steiner':
         dim = n * (n+1) // 2
         config.update(nsamples=nsamples, nsamples_steiner=dim)
         sel = CBCSteiner(
             eta=eta, n=n, T=T-start, nsamples=nsamples, nsamples_steiner=dim,
-            v=vpars[start], gen_X_set=gen_X_set, Vpar=(Vpar_min, Vpar_max),
+            v=vpars[start], gen_X_set=gen_X_set, Vpar=Vpar,
             X_init=X_init, X_true=X, obs_nodes=obs_nodes, log=log, seed=seed)
     else:
         raise ValueError('unknown cbc_alg')
