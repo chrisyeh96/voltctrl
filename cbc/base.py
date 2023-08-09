@@ -24,7 +24,7 @@ def project_into_X_set(X_init: np.ndarray, var_X: cp.Variable,
     if log is not None:
         norm = np_triangle_norm(X_init)
         dist = np_triangle_norm(X_init - X_true)
-        log.write(f'X_init: ||X̂||_△ = {norm:.3f}, ||X̂-X||_△ = {dist:.3f}')
+        log.write(f'X_init: ‖X̂‖_△ = {norm:.3f}, ‖X̂-X‖_△ = {dist:.3f}')
 
     var_X.value = X_init  # if var_X.is_psd(), this automatically checks that X_init is PSD
     total_violation = sum(np.sum(constraint.violation()) for constraint in X_set)
@@ -42,7 +42,7 @@ def project_into_X_set(X_init: np.ndarray, var_X: cp.Variable,
             norm = np_triangle_norm(var_X.value)
             dist = np_triangle_norm(var_X.value - X_true)
             log.write(f'After projection: X_init violation: {total_violation:.3f}.')
-            log.write(f'                  ||X̂||_△ = {norm:.3f}, ||X̂-X||_△ = {dist:.3f}')
+            log.write(f'                  ‖X̂‖_△ = {norm:.3f}, ‖X̂-X‖_△ = {dist:.3f}')
 
 
 class CBCBase:
@@ -82,9 +82,9 @@ class CBCBase:
         - X_init: np.array, shape [n, n], initial guess for X matrix, must be
             PSD and entry-wise >= 0
         - v: np.array, shape [n], initial squared voltage magnitudes
-        - gen_X_set: function, takes an optimization variable (cp.Variable) and returns
-            a list of constraints (cp.Constraint) describing the convex, compact
-            uncertainty set for X
+        - gen_X_set: function, takes an optimization variable (cp.Variable) and
+            returns a list of constraints (cp.Constraint) describing the
+            convex, compact uncertainty set for X
         - X_true: np.array, shape [n, n], true X matrix, optional
         - obs_nodes: list of int, nodes that we can observe voltages for
         - log: object with .write() function, defaults to tqdm

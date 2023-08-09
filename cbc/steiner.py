@@ -69,7 +69,7 @@ class CBCSteiner(CBCBase):
             n = self.n
             X = self.var_X
 
-            theta = cp.Parameter((self.dim,))  # vector
+            theta = cp.Parameter(self.dim)  # vector
             obj = cp.Maximize(theta[:-n] @ cp.upper_tri(X) + theta[-n:] @ cp.diag(X))
             prob = cp.Problem(objective=obj, constraints=self.X_set)
 
@@ -119,7 +119,7 @@ class CBCSteiner(CBCBase):
             self.param[f'us_{b}'] = us
             self.param[f'qs_{b}'] = qs
 
-        theta = cp.Parameter((self.dim,))  # vector
+        theta = cp.Parameter(self.dim)  # vector
         obj = cp.Maximize(theta[:-n] @ cp.upper_tri(X) + theta[-n:] @ cp.diag(X))
         self.prob = cp.Problem(objective=obj, constraints=constrs)
 

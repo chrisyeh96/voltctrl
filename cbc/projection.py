@@ -334,7 +334,6 @@ class CBCProjection(CBCBase):
             self.log.write(f'{indent} CBC slack: {slack_w.value:.3f}')
 
         # check whether constraints are satisfied for latest time step
-        # print('check if the new model is good.')
         satisfied, msg = self._check_newest_obs(t)
         if not satisfied:
             self.log.write(f'{indent} CBC post opt: {msg}')
@@ -481,7 +480,6 @@ class CBCProjectionWithNoise(CBCProjection):
         self.is_cached = True
 
         # check whether constraints are satisfied for latest time step
-        # print('check if the new model is good.')
         satisfied, msg = self._check_newest_obs(t)
         if not satisfied:
             self.log.write(f'{indent} CBC post opt: {msg}')
