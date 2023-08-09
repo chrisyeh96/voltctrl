@@ -11,11 +11,10 @@ import numpy as np
 import pandapower as pp
 import pandapower.topology
 import scipy.io
-import os
+
 warnings.filterwarnings('ignore', category=FutureWarning)
 
 T = TypeVar('T')
-Constraint = cp.constraints.constraint.Constraint
 
 
 def create_56bus() -> pp.pandapowerNet:
@@ -26,7 +25,7 @@ def create_56bus() -> pp.pandapowerNet:
 
     Returns: pp.pandapowerNet
     """
-    net = pp.converter.from_mpc(os.path.join(os.path.dirname(__file__),'data/SCE_56bus.mat'), casename_mpc_file='case_mpc')
+    net = pp.converter.from_mpc('data/SCE_56bus.mat', casename_mpc_file='case_mpc')
 
     # remove loads and generators at all buses except bus 0 (substation),
     # but keep the network lines
@@ -239,7 +238,7 @@ def read_load_data() -> tuple[np.ndarray, np.ndarray]:
     - p: np.array, shape [T, n], net active power injection in MW
     - q: np.array, shape [T, n], exogenous reactive power injection in MVar
     """
-    mat = scipy.io.loadmat(os.path.join(os.path.dirname(__file__),'data/pq_fluc.mat'), squeeze_me=True)
+    mat = scipy.io.loadmat('data/pq_fluc.mat', squeeze_me=True)
     pq_fluc = mat['pq_fluc']  # shape (55, 2, 14421)
     p = pq_fluc[:, 0]  # net active power injection, shape (55, 14421)
     qe = pq_fluc[:, 1]  # exogenous reactive power injection
@@ -274,7 +273,7 @@ def smooth(x: np.ndarray, w: int = 5) -> np.ndarray:
 
 def calc_max_norm_w(R: np.ndarray, X: np.ndarray, p: np.ndarray, qe: np.ndarray
                     ) -> dict[str, np.ndarray]:
-    """Calculates ||w||_∞.
+    """Calculates ‖w‖_∞.
 
     Args
     - R: np.array, shape [n, n]
@@ -292,15 +291,15 @@ def calc_max_norm_w(R: np.ndarray, X: np.ndarray, p: np.ndarray, qe: np.ndarray
         'wp': np.linalg.norm(wp, ord=np.inf, axis=0),
         'wq': np.linalg.norm(wq, ord=np.inf, axis=0)
     }
-    # - max_p_idx: int, bus index with largest ||w_p||
-    # - max_q_idx: int, bus index with largest ||w_q||
+    # - max_p_idx: int, bus index with largest ‖w_p‖
+    # - max_q_idx: int, bus index with largest ‖w_q‖
     # max_p_idx = np.argmax(np.max(np.abs(wp), axis=1))
     # max_q_idx = np.argmax(np.max(np.abs(wq), axis=1))
     return norms
 
 
 def np_triangle_norm(x: np.ndarray) -> float:
-    """Computes ||X||_△"""
+    """Computes ‖X‖_△"""
     return float(np.linalg.norm(np.triu(x), ord='fro'))
 
 
@@ -309,7 +308,7 @@ def known_topology_constraints(
         net: pp.pandapowerNet,
         known_line_params: int,
         known_bus_topo: int
-        ) -> list[Constraint]:
+        ) -> list[cp.Constraint]:
     """Specifies constraints on X matrix if we know the network topology
     among all buses in {1, ..., known_bus_topo}.
 
