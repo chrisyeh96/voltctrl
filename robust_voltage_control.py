@@ -137,7 +137,7 @@ def robust_voltage_control(
         log.write('pbar present')
         pbar.reset(total=T-1)
 
-    params = {}
+    params: dict[int, np.ndarray | tuple[np.ndarray, float]] = {}
     for t in range(T-1):  # t = 0, ..., T-2
         # fill in Parameters
         if δ > 0:  # learning eta
@@ -207,9 +207,9 @@ def update_dists(dists: dict[str, list], t: int,
         - '*_prev': list of float, ‖X̂(t)-X̂(t-1)‖_△ after each model update
             (and likewise for η and (X,η), if learning η)
     - t: int, time step
-    - X_info: tuple of (X̂, X̂_prev, X), each is np.array of shape [n,n]
+    - X_info: tuple of (X̂, X̂_prev, X*), each is np.array of shape [n,n]
         - X̂_prev may be None on the 1st time step
-    - η_info: tuple of (̂η, ̂η_prev, η), each is float
+    - η_info: tuple of (̂η, ̂η_prev, ηmax), each is float
         - ̂η_prev may be None on the 1st time step
     - δ: float, weight of noise term in CBC norm when learning eta
     - log: optional log file
@@ -241,6 +241,7 @@ def update_dists(dists: dict[str, list], t: int,
             dXη = 0.
             dη = 0.
         else:
+            assert etahat_prev is not None
             dXη = np_triangle_delta_norm(X̂ - X̂_prev, etahat - etahat_prev, δ)
             dη = np.abs(etahat - etahat_prev)
             msg += f', ‖(X̂,̂η)-(X̂,̂η)_prev‖_(△,δ) = {dXη:5.3f}'

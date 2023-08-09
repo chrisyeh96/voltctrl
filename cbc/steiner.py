@@ -11,15 +11,13 @@ from tqdm.auto import tqdm
 from cbc.base import CBCBase
 from network_utils import make_pd_and_pos
 
-Constraint = cp.constraints.constraint.Constraint
-
 
 class CBCSteiner(CBCBase):
     """Finds the set of X that is consistent with the observed data. Assumes
     that noise bound (eta) is known.
     """
     def __init__(self, n: int, T: int, X_init: np.ndarray, v: np.ndarray,
-                 gen_X_set: Callable[[cp.Variable], list[Constraint]],
+                 gen_X_set: Callable[[cp.Variable], list[cp.Constraint]],
                  eta: float, nsamples: int, nsamples_steiner: int, # alpha: float,
                  Vpar: tuple[np.ndarray, np.ndarray],
                  X_true: np.ndarray, obs_nodes: Sequence[int] | None = None,
@@ -46,7 +44,7 @@ class CBCSteiner(CBCBase):
         self.nsamples_steiner = nsamples_steiner
         # self.alpha = alpha
 
-        self.w_inds = np.zeros([2, T-1], dtype=bool)  # whether each (u(t), delta_v(t)) is useful
+        self.w_inds = np.zeros([2, T-1], dtype=bool)  # whether each (u(t), Δv(t)) is useful
         self.vpar_inds = np.zeros([2, T], dtype=bool)  # whether each (v(t), q(t)) is useful
         self.w_inds[:, 0] = True
         self.vpar_inds[:, 1] = True
@@ -102,22 +100,22 @@ class CBCSteiner(CBCBase):
         self.param = {}
         for b in ['lb', 'ub']:
             vs = cp.Parameter((self.nsamples, n), name=f'vs_{b}')
-            delta_vs = cp.Parameter((self.nsamples, n), name=f'delta_vs_{b}')
+            Δvs = cp.Parameter((self.nsamples, n), name=f'Δvs_{b}')
             us = cp.Parameter((self.nsamples, n), name=f'us_{b}')
             qs = cp.Parameter((self.nsamples, n), name=f'qs_{b}')
 
-            w_hats = delta_vs - us @ X
+            ŵs = Δvs - us @ X
             vpar_hats = vs - qs @ X
 
             if b == 'lb':
-                constrs.extend([lb <= w_hats,
+                constrs.extend([lb <= ŵs,
                                 self.Vpar_min[None, obs] <= vpar_hats[:, obs]])
             else:
-                constrs.extend([w_hats <= ub,
+                constrs.extend([ŵs <= ub,
                                 vpar_hats[:, obs] <= self.Vpar_max[None, obs]])
 
             self.param[f'vs_{b}'] = vs
-            self.param[f'delta_vs_{b}'] = delta_vs
+            self.param[f'Δvs_{b}'] = Δvs
             self.param[f'us_{b}'] = us
             self.param[f'qs_{b}'] = qs
 
@@ -169,7 +167,7 @@ class CBCSteiner(CBCBase):
         - v: np.array, v(t+1) = v(t) + X @ u(t) = X @ q^c(t+1) + vpar(t+1)
         - u: np.array, u(t) = q^c(t+1) - q^c(t)
         """
-        # update self.u and self.delta_v
+        # update self.u and self.Δv
         super().add_obs(t)
 
         if self.is_cached:
@@ -179,10 +177,10 @@ class CBCSteiner(CBCBase):
                 self.log.write(f't = {t:6d}, CBC pre opt: {msg}')
 
         if t >= 2:
-            self._check_informative(t=t-1, b=self.delta_v, c=self.u, useful=self.w_inds)
+            self._check_informative(t=t-1, b=self.Δv, c=self.u, useful=self.w_inds)
             self._check_informative(t=t, b=self.v, c=self.q, useful=self.vpar_inds)
 
-        # cmp_delta = (delta_v <= self.delta_v[self.w_inds_ub])
+        # cmp_delta = (Δv <= self.Δv[self.w_inds_ub])
         # cmp_u = (u >= self.us[self.w_inds_ub])
         # self.w_inds_ub[self.w_inds_ub] = np.any(cmp_delta, axis=1) | np.any(cmp_u, axis=1)
         # self.w_inds_ub[t] = ~np.any(np.all(cmp_delta, axis=1) & np.all(cmp_u, axis=1))
@@ -199,7 +197,7 @@ class CBCSteiner(CBCBase):
 
     def _check_newest_obs(self, t: int) -> tuple[bool, str]:
         """Checks whether self.X_cache satisfies the newest observation:
-        (v[t], q[t], u[t-1], delta_v[t-1])
+        (v[t], q[t], u[t-1], Δv[t-1])
 
         Returns
         - satisfied: bool, whether self.X_cache satisfies the newest observation
@@ -207,16 +205,16 @@ class CBCSteiner(CBCBase):
             (if satisfied) is empty string ''
         """
         obs = self.obs_nodes
-        w_hat = self.delta_v[t-1] - self.u[t-1] @ self.X_cache
+        ŵ = self.Δv[t-1] - self.u[t-1] @ self.X_cache
         vpar_hat = self.v[t] - self.q[t] @ self.X_cache
-        w_hat_norm = np.max(np.abs(w_hat))
+        ŵ_norm = np.max(np.abs(ŵ))
 
         vpar_lower_violation = np.max(self.Vpar_min[obs] - vpar_hat[obs])
         vpar_upper_violation = np.max(vpar_hat[obs] - self.Vpar_max[obs])
 
         msgs = []
-        if w_hat_norm > self.eta:
-            msgs.append(f'||ŵ(t)||∞: {w_hat_norm:.3f}')
+        if ŵ_norm > self.eta:
+            msgs.append(f'‖ŵ(t)‖∞: {ŵ_norm:.3f}')
         if vpar_lower_violation > 0.05:
             msgs.append(f'max(vpar_min - vpar_hat): {vpar_lower_violation:.3f}')
         if vpar_upper_violation > 0.05:
@@ -231,7 +229,7 @@ class CBCSteiner(CBCBase):
           v(0), ...,   v(t)    # recall:   v(t) = vs[t]
         q^c(0), ..., q^c(t)    # recall: q^c(t) = qs[t]
           u(0), ...,   u(t-1)  # recall:   u(t) = us[t]
-         Δv(0), ...,  Δv(t-1)  # recall:  Δv(t) = delta_vs[t]
+         Δv(0), ...,  Δv(t-1)  # recall:  Δv(t) = Δvs[t]
 
         It is possible that t=0, meaning we haven't seen any observations yet.
         (We have v(0) and q^c(0), but not u(0) or Δv(0).) In this case, our
@@ -255,7 +253,7 @@ class CBCSteiner(CBCBase):
             for b in ['lb', 'ub']:
                 self.param[f'vs_{b}'].value = np.tile(self.Vpar_min, [self.nsamples, 1])
                 self.param[f'vs_{b}'].value[:t] = self.v[1:1+t]
-                self.param[f'delta_vs_{b}'].value = self.delta_v[:self.nsamples]
+                self.param[f'Δvs_{b}'].value = self.Δv[:self.nsamples]
                 self.param[f'us_{b}'].value = self.u[:self.nsamples]
                 self.param[f'qs_{b}'].value = self.q[1:1+self.nsamples]
 
@@ -276,7 +274,7 @@ class CBCSteiner(CBCBase):
                     w_inds[-k:],
                     self.rng.choice(len(w_inds) - k, size=self.nsamples-k, replace=False)
                 ])
-                self.param[f'delta_vs_{b}'].value = self.delta_v[ts]
+                self.param[f'Δvs_{b}'].value = self.Δv[ts]
                 self.param[f'us_{b}'].value = self.u[ts]
 
                 vpar_inds = self.vpar_inds[i].nonzero()[0]
@@ -288,7 +286,7 @@ class CBCSteiner(CBCBase):
                 self.param[f'qs_{b}'].value = self.q[ts]
 
             # self.param_vs.value = self.v[ts+1]
-            # self.param_delta_vs.value = self.delta_v[ts]
+            # self.param_Δvs.value = self.Δv[ts]
             # self.param_us.value = self.us[ts]
             # self.param_qs.value = self.q[ts+1]
 

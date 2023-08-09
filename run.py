@@ -73,7 +73,7 @@ def meta_gen_X_set(norm_bound: float, X_true: np.ndarray,
         Args
         - var_X: cp.Variable, should already be constrained to be PSD
 
-        Returns: list of Constraint
+        Returns: list of cp.Constraint
         """
         assert var_X.is_psd(), 'variable for X was not PSD-constrained'
         norm_sq_diff = cp_triangle_norm_sq(var_X - X_true)
@@ -182,11 +182,10 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
     Pu = 10
 
     # weights on slack variables: alpha for CBC, β for robust oracle
-    alpha = 1000
+    alpha = 1000  # only used when not learning eta, set to 0 to turn off slack variable
     β = 100
 
-    config.update(
-        v_min=v_min, v_max=v_max, v_nom=v_nom, Pv=Pv, Pu=Pu, β=β)
+    config.update(v_min=v_min, v_max=v_max, v_nom=v_nom, Pv=Pv, Pu=Pu, β=β)
     # ==== end of FIXED PARAMETERS ====
 
     filename += tag
@@ -195,6 +194,7 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
         log = tqdm
     else:
         log = wrap_write_newlines(open(f'{filename}.log', 'w'))
+        print(f'filename: {filename}')
     log.write(f'filename: {filename}')
 
     start = 0  # starting time step
@@ -228,9 +228,8 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
         if δ > 0:
             sel = CBCProjectionWithNoise(
                 n=n, T=T-start, X_init=X_init, v=vpars[start],
-                gen_X_set=gen_X_set, eta=eta, nsamples=nsamples, alpha=alpha,
-                δ=δ, Vpar=Vpar, X_true=X, obs_nodes=obs_nodes, log=log,
-                seed=seed)
+                gen_X_set=gen_X_set, eta=eta, nsamples=nsamples, δ=δ,
+                Vpar=Vpar, X_true=X, obs_nodes=obs_nodes, log=log, seed=seed)
         else:
             sel = CBCProjection(
                 n=n, T=T-start, X_init=X_init, v=vpars[start],

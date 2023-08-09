@@ -42,6 +42,50 @@ def check_informative(t: int, b: np.ndarray, c: np.ndarray,
     useful_ub[t] = ~np.any(np.all(cmp_b, axis=1) & np.all(cmp_c, axis=1))
 
 
+def sample_ts(rng: np.random.Generator, valid: np.ndarray | Sequence[int],
+              total: int, num_recent: int, num_update: int,
+              ts_updated: Sequence[int] | None = None
+              ) -> np.ndarray:
+    """Samples time steps based on given criteria.
+
+    Samples:
+    1. num_recent most recent steps
+    2. num_update steps that required model updating
+    3. (total - num_recent - num_update) steps randomly
+
+    Args
+    - rng: numpy random number generator
+    - valid: list of time steps to choose from
+    - total: total number of time steps to sample
+    - num_recent: include num_recent most recent time steps
+    - num_update: include num_update time steps that required model updates
+    - ts_updated: list of time steps where model required updates
+
+    Returns: list of time steps
+    """
+    recent_ts = valid[-num_recent:]
+
+    if num_update == 0:
+        rand_ts = rng.choice(
+            valid[:-num_recent], size=total - num_recent, replace=False)
+        ts = np.concatenate([recent_ts, rand_ts])
+
+    else:
+        assert ts_updated is not None
+
+        valid_update_ts = np.setdiff1d(ts_updated, recent_ts)
+        update_ts = rng.choice(
+            valid_update_ts, size=min(num_update, len(valid_update_ts)),
+            replace=False)
+        valid_rand_ts = np.setdiff1d(valid[:-num_recent], update_ts)
+        rand_ts = rng.choice(
+            valid_rand_ts, size=total - num_recent - len(update_ts),
+            replace=False)
+        ts = np.concatenate([recent_ts, update_ts, rand_ts])
+
+    return ts
+
+
 class CBCProjection(CBCBase):
     """Finds the set of X that is consistent with the observed data. Assumes
     that noise bound (eta) is known.
@@ -59,6 +103,7 @@ class CBCProjection(CBCBase):
         - eta: float, noise bound
         - nsamples: int, # of observations to use for defining the convex set
         - alpha: float, weight on slack variable
+            set to 0 to turn off slack variable
         - Vpar: tuple (Vpar_min, Vpar_max), box description of Vpar
             - each Vpar_* is a np.array of shape [n]
         - seed: int, random seed
@@ -75,8 +120,9 @@ class CBCProjection(CBCBase):
         self.vpar_inds = np.zeros([2, T], dtype=bool)  # whether each (v(t), q(t)) is useful
         self.w_inds[:, 0] = True
         self.vpar_inds[:, 1] = True
+        self.ts_updated: list[int] = []
 
-        self.var_slack_w = cp.Variable(nonneg=True)
+        self.var_slack_w = cp.Variable(nonneg=True) if alpha > 0 else cp.Constant(0.)
         self.Vpar_min, self.Vpar_max = Vpar
 
         self._setup_prob()
@@ -155,6 +201,7 @@ class CBCProjection(CBCBase):
             satisfied, msg = self._check_newest_obs(t)
             if not satisfied:
                 self.is_cached = False
+                self.ts_updated.append(t)
                 self.log.write(f't = {t:6d}, CBC pre opt: {msg}')
 
         if t >= 2:
@@ -190,7 +237,7 @@ class CBCProjection(CBCBase):
 
         msgs = []
         if w_hat_norm > self.eta:
-            msgs.append(f'||ŵ(t)||∞: {w_hat_norm:.3f}')
+            msgs.append(f'‖ŵ(t)‖∞: {w_hat_norm:.3f}')
         if vpar_lower_violation > 0.05:
             msgs.append(f'max(vpar_min - vpar_hat): {vpar_lower_violation:.3f}')
         if vpar_upper_violation > 0.05:
@@ -255,18 +302,16 @@ class CBCProjection(CBCBase):
 
             for i, b in enumerate(['lb', 'ub']):
                 w_inds = self.w_inds[i, :t].nonzero()[0]
-                ts = np.concatenate([
-                    w_inds[-k:],
-                    self.rng.choice(len(w_inds) - k, size=self.nsamples-k, replace=False)
-                ])
+                ts = sample_ts(self.rng, w_inds, total=self.nsamples,
+                               num_recent=k, num_update=0)
+
                 self.param[f'Δvs_{b}'].value = self.Δv[ts]
                 self.param[f'us_{b}'].value = self.u[ts]
 
                 vpar_inds = self.vpar_inds[i, :t+1].nonzero()[0]
-                ts = np.concatenate([
-                    vpar_inds[-k:],
-                    self.rng.choice(len(vpar_inds) - k, size=self.nsamples-k, replace=False)
-                ])
+                ts = sample_ts(self.rng, vpar_inds, total=self.nsamples,
+                               num_recent=k, num_update=0)
+
                 self.param[f'vs_{b}'].value = self.v[ts]
                 self.param[f'qs_{b}'].value = self.q[ts]
 
@@ -300,7 +345,7 @@ class CBCProjection(CBCBase):
 class CBCProjectionWithNoise(CBCProjection):
     def __init__(self, n: int, T: int, X_init: np.ndarray, v: np.ndarray,
                  gen_X_set: Callable[[cp.Variable], list[cp.Constraint]],
-                 eta: float, nsamples: int, alpha: float, δ: float,
+                 eta: float, nsamples: int, δ: float,
                  Vpar: tuple[np.ndarray, np.ndarray],
                  X_true: np.ndarray,
                  obs_nodes: Sequence[int] | None = None,
@@ -309,11 +354,14 @@ class CBCProjectionWithNoise(CBCProjection):
         Args:
         - δ: float, weight of noise term in CBC norm
         - all other args are the same as CBCProjection. However, here, we
-            interpret eta as an upper limit on true noise.
+            interpret eta as an upper limit on true noise. We also remove the
+            slack variable, which should be unnecessary as long as eta is set
+            large enough.
         """
         self.var_eta = cp.Variable(nonneg=True)
         self.eta_max = eta  # upper limit on true noise
         self.δ = δ
+        alpha = 0
         super().__init__(n, T, X_init, v, gen_X_set, eta, nsamples, alpha,
                          Vpar, X_true, obs_nodes, log, seed)
         self.eta = 0  # cached value
@@ -328,7 +376,6 @@ class CBCProjectionWithNoise(CBCProjection):
         # optimization variables
         X = self.var_X
         var_eta = self.var_eta
-        slack_w = self.var_slack_w
 
         constrs = self.X_set[:]  # make a shallow copy
         constrs.append(var_eta <= self.eta_max)
@@ -348,12 +395,12 @@ class CBCProjectionWithNoise(CBCProjection):
 
             if b == 'lb':
                 constrs.extend([
-                    lb - slack_w <= ŵs,
+                    lb <= ŵs,
                     self.Vpar_min[None, obs] <= vpar_hats[:, obs]
                 ])
             else:
                 constrs.extend([
-                    ŵs <= ub + slack_w,
+                    ŵs <= ub,
                     vpar_hats[:, obs] <= self.Vpar_max[None, obs]
                 ])
 
@@ -365,8 +412,7 @@ class CBCProjectionWithNoise(CBCProjection):
         self.param['etaprev'] = etaprev
 
         obj = cp.Minimize(cp_triangle_norm_sq(X-Xprev)
-                          + (self.δ * (var_eta - etaprev))**2
-                          + self.alpha * slack_w)
+                          + (self.δ * (var_eta - etaprev))**2)
         self.prob = cp.Problem(objective=obj, constraints=constrs)
 
         # if cp.Problem is DPP, then it can be compiled for speedup
@@ -391,7 +437,6 @@ class CBCProjectionWithNoise(CBCProjection):
         #     include a slack variable in case of infeasibility.
         X = self.var_X
         var_eta = self.var_eta
-        slack_w = self.var_slack_w
 
         # when t < self.nsamples
         if t < self.nsamples:
@@ -412,18 +457,16 @@ class CBCProjectionWithNoise(CBCProjection):
 
             for i, b in enumerate(['lb', 'ub']):
                 w_inds = self.w_inds[i, :t].nonzero()[0]
-                ts = np.concatenate([
-                    w_inds[-k:],
-                    self.rng.choice(len(w_inds) - k, size=self.nsamples-k, replace=False)
-                ])
+                ts = sample_ts(self.rng, w_inds, total=self.nsamples,
+                               num_recent=k, num_update=0)
+
                 self.param[f'Δvs_{b}'].value = self.Δv[ts]
                 self.param[f'us_{b}'].value = self.u[ts]
 
                 vpar_inds = self.vpar_inds[i, :t+1].nonzero()[0]
-                ts = np.concatenate([
-                    vpar_inds[-k:],
-                    self.rng.choice(len(vpar_inds) - k, size=self.nsamples-k, replace=False)
-                ])
+                ts = sample_ts(self.rng, vpar_inds, total=self.nsamples,
+                               num_recent=k, num_update=0)
+
                 self.param[f'vs_{b}'].value = self.v[ts]
                 self.param[f'qs_{b}'].value = self.q[ts]
 
@@ -436,10 +479,6 @@ class CBCProjectionWithNoise(CBCProjection):
         self.eta = float(var_eta.value)  # make a copy
         make_pd_and_pos(self.X_cache)
         self.is_cached = True
-
-        # check slack variable
-        if slack_w.value > 0:
-            self.log.write(f'{indent} CBC slack: {slack_w.value:.3f}')
 
         # check whether constraints are satisfied for latest time step
         # print('check if the new model is good.')
