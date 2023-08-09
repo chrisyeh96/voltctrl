@@ -10,6 +10,7 @@ from tqdm.auto import tqdm
 
 from cbc.base import CBCBase
 from network_utils import make_pd_and_pos
+from utils import solve_prob
 
 
 class CBCSteiner(CBCBase):
@@ -18,7 +19,7 @@ class CBCSteiner(CBCBase):
     """
     def __init__(self, n: int, T: int, X_init: np.ndarray, v: np.ndarray,
                  gen_X_set: Callable[[cp.Variable], list[cp.Constraint]],
-                 eta: float, nsamples: int, nsamples_steiner: int, # alpha: float,
+                 eta: float, nsamples: int, nsamples_steiner: int,
                  Vpar: tuple[np.ndarray, np.ndarray],
                  X_true: np.ndarray, obs_nodes: Sequence[int] | None = None,
                  log: tqdm | io.TextIOBase | None = None, seed: int = 123):
@@ -29,7 +30,6 @@ class CBCSteiner(CBCBase):
         - nsamples: int, # of observations to use for defining the convex set
         - nsamples_steiner: int, # of random directions to use for estimating the
             Steiner point integral
-        # - alpha: float, weight on slack variable
         - Vpar: tuple (Vpar_min, Vpar_max), box description of Vpar
             - each Vpar_* is a np.array of shape [n]
         - seed: int, random seed
@@ -42,7 +42,6 @@ class CBCSteiner(CBCBase):
         self.eta = eta
         self.nsamples = nsamples
         self.nsamples_steiner = nsamples_steiner
-        # self.alpha = alpha
 
         self.w_inds = np.zeros([2, T-1], dtype=bool)  # whether each (u(t), Δv(t)) is useful
         self.vpar_inds = np.zeros([2, T], dtype=bool)  # whether each (v(t), q(t)) is useful
@@ -74,9 +73,9 @@ class CBCSteiner(CBCBase):
             prob = cp.Problem(objective=obj, constraints=self.X_set)
 
             X_values = []
-            for i in range(self.nsamples_steiner):
+            for _ in range(self.nsamples_steiner):
                 theta.value = self.rng.normal(size=self.dim)
-                prob.solve(solver=cp.MOSEK)
+                solve_prob(prob, log=self.log, name='CBC init')
                 X_values.append(X.value.copy())
             X.value = np.mean(X_values, axis=0)
 
@@ -294,15 +293,10 @@ class CBCSteiner(CBCBase):
         X_values = []
         for i in tqdm(range(self.nsamples_steiner)):
             self.param['theta'].value = self.rng.normal(size=self.dim)
-            prob.solve(solver=cp.MOSEK)
+            solve_prob(prob, log=self.log, name='CBC', indent=indent)
             X_values.append(X.value.copy())
         X.value = np.mean(X_values, axis=0)
 
-        if prob.status != 'optimal':
-            self.log.write(f'{indent} CBC prob.status = {prob.status}')
-            if prob.status == 'infeasible':
-                import pdb
-                pdb.set_trace()
         self.X_cache = np.array(X.value)  # make a copy
         make_pd_and_pos(self.X_cache)
         self.is_cached = True
