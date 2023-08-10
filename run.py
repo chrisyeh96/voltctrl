@@ -121,8 +121,10 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
     - noise: float, network impedances modified by fraction Uniform(±noise)
     - modify: str, how to modify network, one of [None, 'perm', 'linear', 'rand']
     - δ: float, weight of noise term in CBC norm when learning eta
-    - obs_nodes: list of int, nodes that we can observe voltages for
-    - ctrl_nodes: list of int, nodes that we can control voltages for
+    - obs_nodes: list of int, nodes that we can observe voltages for,
+        set to None if we observe all voltages
+    - ctrl_nodes: list of int, nodes that we can control voltages for,
+        set to None if we control all voltages
     - known_bus_topo: int in [0, n], n = # of buses (excluding substation),
         when topology is known for buses/lines in {0, ..., known_bus_topo-1}
     - known_line_params: int in [0, known_bus_topo], when line parameters
@@ -137,7 +139,7 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
 
     Returns: str, filename (without extension)
     """
-    assert δ >= 0
+    assert δ >= 0, 'δ must be >= 0'
 
     if savedir != '':
         os.makedirs(savedir, exist_ok=True)
@@ -233,18 +235,19 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
                 gen_X_set=gen_X_set, X_true=X, obs_nodes=obs_nodes, log=log)
     elif cbc_alg == 'proj':
         config.update(alpha=alpha, nsamples=nsamples)
-        if δ > 0:
-            sel = CBCProjectionWithNoise(
-                n=n, T=T-start, X_init=X_init, v=vpars[start],
-                gen_X_set=gen_X_set, eta=eta, nsamples=nsamples, δ=δ,
-                Vpar=Vpar, X_true=X, obs_nodes=obs_nodes, log=log, seed=seed)
-        else:
+        if δ == 0:
             sel = CBCProjection(
                 n=n, T=T-start, X_init=X_init, v=vpars[start],
                 gen_X_set=gen_X_set, eta=eta, nsamples=nsamples, alpha=alpha,
                 Vpar=Vpar, X_true=X, obs_nodes=obs_nodes, log=log, seed=seed)
+        else:
+            sel = CBCProjectionWithNoise(
+                n=n, T=T-start, X_init=X_init, v=vpars[start],
+                gen_X_set=gen_X_set, eta=eta, nsamples=nsamples, δ=δ,
+                Vpar=Vpar, X_true=X, obs_nodes=obs_nodes, log=log, seed=seed)
         save_dict.update(w_inds=sel.w_inds, vpar_inds=sel.vpar_inds)
     elif cbc_alg == 'steiner':
+        assert δ == 0
         dim = n * (n+1) // 2
         config.update(nsamples=nsamples, nsamples_steiner=dim)
         sel = CBCSteiner(
@@ -298,6 +301,7 @@ def wrap_write_newlines(f: Any) -> Any:
 
 
 if __name__ == '__main__':
+    savedir = 'out'
     # all_nodes = np.arange(55)
     # exclude = np.array([9, 19, 22, 31, 40, 46, 55]) - 2
     # obs_nodes = np.setdiff1d(all_nodes, exclude).tolist()
@@ -321,5 +325,47 @@ if __name__ == '__main__':
             seed=seed,
             pbar=tqdm(),
             is_interactive=False,
-            savedir='out',
+            savedir=savedir,
             tag='_knownlines14')  # choose from ['', '_partialobs', '_partialctrl', '_knowntopoX', '_knownlinesX']
+
+    # fixed X*, known eta
+    # run(
+    #     ε=0.1,
+    #     q_max=0.24,
+    #     cbc_alg='const',
+    #     eta=8.65,
+    #     norm_bound=0.,
+    #     norm_bound_init=None,
+    #     noise=0,
+    #     modify=None,
+    #     δ=0,
+    #     obs_nodes=None,
+    #     ctrl_nodes=None,
+    #     known_line_params=0,
+    #     known_bus_topo=0,
+    #     seed=None,
+    #     pbar=tqdm(),
+    #     is_interactive=False,
+    #     savedir=savedir,
+    #     tag='')
+
+    # fixed X*, unknown eta
+    # run(
+    #     ε=0.1,
+    #     q_max=0.24,
+    #     cbc_alg='const',
+    #     eta=10,
+    #     norm_bound=0.,
+    #     norm_bound_init=None,
+    #     noise=0,
+    #     modify=None,
+    #     δ=20,
+    #     obs_nodes=None,
+    #     ctrl_nodes=None,
+    #     known_line_params=0,
+    #     known_bus_topo=0,
+    #     seed=None,
+    #     pbar=tqdm(),
+    #     is_interactive=False,
+    #     savedir=savedir,
+    #     tag='')
