@@ -174,10 +174,6 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
     v_nom = 12**2  # nominal squared voltage magnitude, units kV^2
     v_sub = v_nom  # fixed squared voltage magnitude at substation, units kV^2
 
-    vpars = qe @ X + p @ R + v_sub  # shape [T, n]
-    Vpar_min = np.min(vpars, axis=0)  # shape [n]
-    Vpar_max = np.max(vpars, axis=0)  # shape [n]
-
     Pv = 0.1
     Pu = 10
 
@@ -198,16 +194,12 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
     log.write(f'filename: {filename}')
 
     # ==== NONLINEAR MODIFICATIONS ====
-    # Load nonlinear v_par, which is equal to the voltage from nonlinear power flow voltage without control
-    nonlinear_vpar = np.load('nonlinear_voltage_baseline.npy')
-    nonlinear_vpars = (nonlinear_vpar*12.)**2
-    nonlinear_Vpar_min = np.min(nonlinear_vpars, axis=0) -10
-    nonlinear_Vpar_max = np.max(nonlinear_vpars, axis=0) +10
-    Vpar = (nonlinear_Vpar_min, nonlinear_Vpar_max)
-
-    # Create nonlinear voltage simulation environment to be supplied to robust_voltage_control()
-    injection_bus = np.array(range(0, 55))
-    env = VoltageCtrl_nonlinear(pp_net=net, vmin=v_min, vmax=v_max, v0=v_nom, injection_bus=injection_bus)
+    # Load nonlinear vpar (i.e., nonlinear power flow voltage without control)
+    vpars = np.load('nonlinear_voltage_baseline.npy')[:, 1:]  # shape [T, n]
+    vpars = (vpars * 12.)**2
+    vpar_min = np.min(vpars, axis=0) - 10
+    vpar_max = np.max(vpars, axis=0) + 10
+    Vpar = (vpar_min, vpar_max)
     # ==== NONLINEAR MODIFICATIONS ====
 
     start = 0  # starting time step
@@ -233,19 +225,19 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
 
     sel: CBCBase
     if cbc_alg == 'const':
-        sel = CBCConst(n=n, T=T, X_init=X_init, v=nonlinear_vpars[start],
+        sel = CBCConst(n=n, T=T, X_init=X_init, v=vpars[start],
                        gen_X_set=gen_X_set, X_true=X, obs_nodes=obs_nodes,
                        log=log)
     elif cbc_alg == 'proj':
         config.update(alpha=alpha, nsamples=nsamples)
         if δ > 0:
             sel = CBCProjectionWithNoise(
-                n=n, T=T-start, X_init=X_init, v=nonlinear_vpars[start],
+                n=n, T=T-start, X_init=X_init, v=vpars[start],
                 gen_X_set=gen_X_set, eta=eta, nsamples=nsamples, δ=δ,
                 Vpar=Vpar, X_true=X, obs_nodes=obs_nodes, log=log, seed=seed)
         else:
             sel = CBCProjection(
-                n=n, T=T-start, X_init=X_init, v=nonlinear_vpars[start],
+                n=n, T=T-start, X_init=X_init, v=vpars[start],
                 gen_X_set=gen_X_set, eta=eta, nsamples=nsamples, alpha=alpha,
                 Vpar=Vpar, X_true=X, obs_nodes=obs_nodes, log=log, seed=seed)
         save_dict.update(w_inds=sel.w_inds, vpar_inds=sel.vpar_inds)
@@ -254,7 +246,7 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
         config.update(nsamples=nsamples, nsamples_steiner=dim)
         sel = CBCSteiner(
             eta=eta, n=n, T=T-start, nsamples=nsamples, nsamples_steiner=dim,
-            v=nonlinear_vpars[start], gen_X_set=gen_X_set, Vpar=Vpar,
+            v=vpars[start], gen_X_set=gen_X_set, Vpar=Vpar,
             X_init=X_init, X_true=X, obs_nodes=obs_nodes, log=log, seed=seed)
     else:
         raise ValueError('unknown cbc_alg')
@@ -265,7 +257,7 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
 
     vs, qcs, dists, params, check_prediction = robust_voltage_control(
         p=p[start:T], qe=qe[start:T],
-        v_lims=(v_min, v_max), q_lims=(-q_max, q_max), v_nom=v_nom, env=env,
+        v_lims=(v_min, v_max), q_lims=(-q_max, q_max), v_nom=v_nom, net=net,
         X=X, R=R, Pv=Pv * np.eye(n), Pu=Pu * np.eye(n),
         eta=eta, ε=ε, v_sub=v_sub, β=β, sel=sel, δ=δ,
         ctrl_nodes=ctrl_nodes, pbar=pbar, log=log,
@@ -283,7 +275,7 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
     # plot and save figure
     volt_plot.update(qcs=qcs,
                      vs=np.sqrt(vs),
-                     vpars=np.sqrt(nonlinear_vpars),
+                     vpars=np.sqrt(vpars),
                      dists=(dists['t'], dists['X_true']))
     volt_plot.fig.savefig(f'{filename}.svg', pad_inches=0, bbox_inches='tight')
     volt_plot.fig.savefig(f'{filename}.pdf', pad_inches=0, bbox_inches='tight')

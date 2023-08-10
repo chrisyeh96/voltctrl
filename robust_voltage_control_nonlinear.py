@@ -6,6 +6,7 @@ from typing import Any
 
 import cvxpy as cp
 import numpy as np
+import pandapower as pp
 import scipy.io as spio
 from tqdm.auto import tqdm
 
@@ -65,7 +66,7 @@ assert np.allclose(gen_p.sum(axis=0), solar)
 def robust_voltage_control(
         p: np.ndarray, qe: np.ndarray,
         v_lims: tuple[Any, Any], q_lims: tuple[Any, Any], v_nom: Any,
-        env: Any,
+        net: pp.pandapowerNet,
         X: np.ndarray, R: np.ndarray,
         Pv: np.ndarray, Pu: np.ndarray,
         eta: float, ε: float, v_sub: float, β: float,
@@ -228,9 +229,15 @@ def robust_voltage_control(
         # ==== BEGINNING OF NONLINEAR MODIFICATIONS ====
         # vs[t+1] = vpars[t+1] + (qc_next.value) @ X
         # print('linear: ', np.linalg.norm(vs[t+1]))
-        vs[t+1], _, _ = env.step_load_solar(
-            qc_next.value, load_p[:,t], load_q[:,t], gen_p[:,t], gen_q[:,t])
-        vs[t+1] = (12. * vs[t+1])**2
+
+        net.load['p_mw'] = load_p[:,t]
+        net.load['q_mvar'] = load_q[:,t]
+        net.sgen['p_mw'] = gen_p[:,t]
+        net.sgen['q_mvar'] = gen_q[:,t] + qc_next.value
+        pp.runpp(net, algorithm='bfsw', init='dc')
+        vnext = net.res_bus.iloc[1:].vm_pu.to_numpy()
+        vs[t+1] = (12. * vnext)**2
+
         check_prediction['fixed_optimal_linear'].append(
             np.linalg.norm(vs[t+1] - (nonlinear_vpars[t+1] + qc_next.value @ X)))
         check_prediction['adaptive_linear'].append(
