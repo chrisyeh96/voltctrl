@@ -51,6 +51,7 @@ def create_RX_from_net(net: pp.pandapowerNet, noise: float = 0,
     - noise: float, optional add uniform noise to impedances, values in [0,1]
     - modify: str, how to modify network, one of [None, 'perm', 'linear', 'rand']
     - seed: int, for generating the uniform noise
+        seed must be provided if (noise > 0) or (modify is not None)
     - check_pd: bool, whether to assert that returned R,X are PD
 
     Returns: tuple (X, R)
@@ -67,7 +68,8 @@ def create_RX_from_net(net: pp.pandapowerNet, noise: float = 0,
     r_ohm_per_km = net.line['r_ohm_per_km'].values
     x_ohm_per_km = net.line['x_ohm_per_km'].values
 
-    rng = np.random.default_rng(seed)
+    if seed is not None:
+        rng = np.random.default_rng(seed)
 
     if noise > 0:
         # Do NOT update r/x_ohm_per_km in-place. We do not want to change

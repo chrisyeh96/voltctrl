@@ -108,6 +108,7 @@ class CBCProjection(CBCBase):
             - each Vpar_* is a np.array of shape [n]
         - seed: int, random seed
         """
+        assert seed is not None
         super().__init__(n=n, T=T, X_init=X_init, v=v, gen_X_set=gen_X_set,
                          X_true=X_true, obs_nodes=obs_nodes, log=log)
         self.is_cached = True
@@ -120,7 +121,6 @@ class CBCProjection(CBCBase):
         self.vpar_inds = np.zeros([2, T], dtype=bool)  # whether each (v(t), q(t)) is useful
         self.w_inds[:, 0] = True
         self.vpar_inds[:, 1] = True
-        self.ts_updated: list[int] = []
 
         self.var_slack_w = cp.Variable(nonneg=True) if alpha > 0 else cp.Constant(0.)
         self.Vpar_min, self.Vpar_max = Vpar
@@ -228,16 +228,16 @@ class CBCProjection(CBCBase):
         X = self.X_cache if X_test is None else X_test
 
         obs = self.obs_nodes
-        w_hat = self.Δv[t-1] - self.u[t-1] @ X
+        ŵ = self.Δv[t-1] - self.u[t-1] @ X
         vpar_hat = self.v[t] - self.q[t] @ X
-        w_hat_norm = np.max(np.abs(w_hat[obs]))
+        ŵ_norm = np.max(np.abs(ŵ[obs]))
 
         vpar_lower_violation = np.max(self.Vpar_min[obs] - vpar_hat[obs])
         vpar_upper_violation = np.max(vpar_hat[obs] - self.Vpar_max[obs])
 
         msgs = []
-        if w_hat_norm > self.eta:
-            msgs.append(f'‖ŵ(t)‖∞: {w_hat_norm:.3f}')
+        if ŵ_norm > self.eta:
+            msgs.append(f'‖ŵ(t)‖∞: {ŵ_norm:.3f}')
         if vpar_lower_violation > 0.05:
             msgs.append(f'max(vpar_min - vpar_hat): {vpar_lower_violation:.3f}')
         if vpar_upper_violation > 0.05:

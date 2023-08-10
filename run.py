@@ -12,7 +12,9 @@ import numpy as np
 import pandapower as pp
 from tqdm.auto import tqdm
 
-from cbc.base import CBCBase, CBCConst, cp_triangle_norm_sq, project_into_X_set
+from cbc.base import (
+    CBCBase, CBCConst, CBCConstWithNoise, cp_triangle_norm_sq,
+    project_into_X_set)
 from cbc.projection import CBCProjection, CBCProjectionWithNoise
 from cbc.steiner import CBCSteiner
 from network_utils import (
@@ -135,6 +137,8 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
 
     Returns: str, filename (without extension)
     """
+    assert δ >= 0
+
     if savedir != '':
         os.makedirs(savedir, exist_ok=True)
     tz = dt.timezone(dt.timedelta(hours=-8))  # PST
@@ -142,7 +146,7 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
 
     config: dict[str, Any] = dict(
         cbc_alg=cbc_alg, q_max=q_max, ε=ε, eta=eta, δ=δ,
-        obs_nodes=obs_nodes, ctrl_nodes=ctrl_nodes,
+        obs_nodes=obs_nodes, ctrl_nodes=ctrl_nodes, seed=seed,
         known_bus_topo=known_bus_topo, known_line_params=known_line_params)
     filename = os.path.join(savedir, f'CBC{cbc_alg}')
 
@@ -151,8 +155,7 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
 
     # read in data
     if noise > 0 or modify is not None:
-        config.update(seed=seed, norm_bound=norm_bound,
-                      norm_bound_init=norm_bound_init)
+        config.update(norm_bound=norm_bound, norm_bound_init=norm_bound_init)
         if noise > 0:
             config.update(noise=noise)
             filename += f'_noise{noise}'
@@ -220,9 +223,14 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
 
     sel: CBCBase
     if cbc_alg == 'const':
-        sel = CBCConst(n=n, T=T, X_init=X_init, v=vpars[start],
-                       gen_X_set=gen_X_set, X_true=X, obs_nodes=obs_nodes,
-                       log=log)
+        if δ == 0:
+            sel = CBCConst(
+                n=n, T=T, X_init=X_init, v=vpars[start],
+                gen_X_set=gen_X_set, X_true=X, obs_nodes=obs_nodes, log=log)
+        else:
+            sel = CBCConstWithNoise(
+                n=n, T=T, X_init=X_init, v=vpars[start],
+                gen_X_set=gen_X_set, X_true=X, obs_nodes=obs_nodes, log=log)
     elif cbc_alg == 'proj':
         config.update(alpha=alpha, nsamples=nsamples)
         if δ > 0:

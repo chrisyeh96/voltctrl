@@ -103,6 +103,7 @@ class CBCBase:
         self.Δv = np.zeros([T-1, n])  # Δv[t] = v(t+1) - v(t)
         self.u = np.zeros([T-1, n])  # u[t] = u(t) = q^c(t+1) - q^c(t)
         self.q = np.zeros([T, n])  # q[t] = q^c(t)
+        self.ts_updated: list[int] = []
 
         # define optimization variables
         self.var_X = cp.Variable((n, n), PSD=True)
@@ -155,3 +156,53 @@ class CBCConst(CBCBase):
     """
     def select(self, t: int) -> np.ndarray:
         return self.X_init
+
+
+class CBCConstWithNoise(CBCBase):
+    """CBC class that always returns the initial X, but learns eta."""
+    def __init__(self, n: int, T: int, X_init: np.ndarray, v: np.ndarray,
+                 gen_X_set: Callable[[cp.Variable], list[cp.Constraint]],
+                 X_true: np.ndarray,
+                 obs_nodes: Sequence[int] | None = None,
+                 log: tqdm | io.TextIOBase | None = None):
+        super().__init__(n=n, T=T, X_init=X_init, v=v, gen_X_set=gen_X_set,
+                         X_true=X_true, obs_nodes=obs_nodes, log=log)
+        self.eta = 0
+
+    def _check_newest_obs(self, t: int) -> tuple[bool, str]:
+        """Checks whether self.eta satisfies the
+        newest observation: (v[t], q[t], u[t-1], Δv[t-1])
+
+        Returns
+        - satisfied: bool, whether self.eta satisfies the newest observation
+        - msg: str, (if not satisfied) describes which constraints are not satisfied,
+            (if satisfied) is empty string ''
+        """
+        X = self.X_init
+
+        obs = self.obs_nodes
+        ŵ = self.Δv[t-1] - self.u[t-1] @ X
+        ŵ_norm = np.max(np.abs(ŵ[obs]))
+
+        if ŵ_norm > self.eta:
+            msg = f'‖ŵ(t)‖∞: {ŵ_norm:.3f}'
+            self.eta = ŵ_norm
+            return False, msg
+        else:
+            return True, ''
+
+    def add_obs(self, t: int) -> None:
+        """
+        Args
+        - t: int, current time step (>=1), v[t] and q[t] have just been updated
+        """
+        # update self.u and self.Δv
+        super().add_obs(t)
+
+        satisfied, msg = self._check_newest_obs(t)
+        if not satisfied:
+            self.ts_updated.append(t)
+            self.log.write(f't = {t:6d}, CBC pre opt: {msg}')
+
+    def select(self, t: int) -> tuple[np.ndarray, float]:
+        return self.X_init, self.eta
