@@ -96,6 +96,7 @@ class CBCProjection(CBCBase):
                  Vpar: tuple[np.ndarray, np.ndarray],
                  X_true: np.ndarray,
                  obs_nodes: Sequence[int] | None = None,
+                 prune_constraints: bool = False,
                  log: tqdm | io.TextIOBase | None = None, seed: int = 123):
         """
         Args
@@ -106,6 +107,8 @@ class CBCProjection(CBCBase):
             set to 0 to turn off slack variable
         - Vpar: tuple (Vpar_min, Vpar_max), box description of Vpar
             - each Vpar_* is a np.array of shape [n]
+        - prune_constraints: whether to attempt to remove constraints that are
+            already handled by other constraints
         - seed: int, random seed
         """
         assert seed is not None
@@ -117,10 +120,12 @@ class CBCProjection(CBCBase):
         self.nsamples = nsamples
         self.alpha = alpha
 
-        self.w_inds = np.zeros([2, T-1], dtype=bool)  # whether each (u(t), Δv(t)) is useful
-        self.vpar_inds = np.zeros([2, T], dtype=bool)  # whether each (v(t), q(t)) is useful
-        self.w_inds[:, 0] = True
-        self.vpar_inds[:, 1] = True
+        self.prune_constraints = prune_constraints
+        if prune_constraints:
+            self.w_inds = np.zeros([2, T-1], dtype=bool)  # whether each (u(t), Δv(t)) is useful
+            self.vpar_inds = np.zeros([2, T], dtype=bool)  # whether each (v(t), q(t)) is useful
+            self.w_inds[:, 0] = True
+            self.vpar_inds[:, 1] = True
 
         self.var_slack_w = cp.Variable(nonneg=True) if alpha > 0 else cp.Constant(0.)
         self.Vpar_min, self.Vpar_max = Vpar
@@ -129,7 +134,7 @@ class CBCProjection(CBCBase):
         self.rng = np.random.default_rng(seed)
 
     def _setup_prob(self) -> None:
-        """Defines self.prob as the projection of Xprev into the consistent set.
+        """Defines self.prob as the projection of Xprev into consistent set.
         """
         n = self.n
         ub = self.eta  # * np.ones([n, 1])
@@ -144,50 +149,59 @@ class CBCProjection(CBCBase):
         self.param = {}
 
         Xprev = cp.Parameter((n, n), PSD=True, name='Xprev')
-        for b in ['lb', 'ub']:
-            vs = cp.Parameter((self.nsamples, n), name=f'vs_{b}')
-            Δvs = cp.Parameter((self.nsamples, n), name=f'Δvs_{b}')
-            us = cp.Parameter((self.nsamples, n), name=f'us_{b}')
-            qs = cp.Parameter((self.nsamples, n), name=f'qs_{b}')
+        self.param['Xprev'] = Xprev
+
+        if self.prune_constraints:
+            for b in ['lb', 'ub']:
+                vs = cp.Parameter((self.nsamples, n), name=f'vs_{b}')
+                Δvs = cp.Parameter((self.nsamples, n), name=f'Δvs_{b}')
+                us = cp.Parameter((self.nsamples, n), name=f'us_{b}')
+                qs = cp.Parameter((self.nsamples, n), name=f'qs_{b}')
+
+                ŵs = Δvs - us @ X
+                vpar_hats = vs - qs @ X
+
+                if b == 'lb':
+                    constrs.extend([
+                        lb - slack_w <= ŵs[:, obs],
+                        self.Vpar_min[None, obs] <= vpar_hats[:, obs]
+                    ])
+                else:
+                    constrs.extend([
+                        ŵs[:, obs] <= ub + slack_w,
+                        vpar_hats[:, obs] <= self.Vpar_max[None, obs]
+                    ])
+
+                self.param[f'vs_{b}'] = vs
+                self.param[f'Δvs_{b}'] = Δvs
+                self.param[f'us_{b}'] = us
+                self.param[f'qs_{b}'] = qs
+        else:
+            vs = cp.Parameter((self.nsamples, n), name='vs')
+            Δvs = cp.Parameter((self.nsamples, n), name='Δvs')
+            us = cp.Parameter((self.nsamples, n), name='us')
+            qs = cp.Parameter((self.nsamples, n), name='qs')
 
             ŵs = Δvs - us @ X
             vpar_hats = vs - qs @ X
 
-            if b == 'lb':
-                constrs.extend([
-                    lb - slack_w <= ŵs,
-                    self.Vpar_min[None, obs] <= vpar_hats[:, obs]
-                ])
-            else:
-                constrs.extend([
-                    ŵs <= ub + slack_w,
-                    vpar_hats[:, obs] <= self.Vpar_max[None, obs]
-                ])
+            constrs.extend([
+                lb - slack_w <= ŵs[:, obs], ŵs[:, obs] <= ub + slack_w,
+                self.Vpar_min[None, obs] <= vpar_hats[:, obs],
+                vpar_hats[:, obs] <= self.Vpar_max[None, obs]
+            ])
 
-            self.param[f'vs_{b}'] = vs
-            self.param[f'Δvs_{b}'] = Δvs
-            self.param[f'us_{b}'] = us
-            self.param[f'qs_{b}'] = qs
-        self.param['Xprev'] = Xprev
+            self.param['vs'] = vs
+            self.param['Δvs'] = Δvs
+            self.param['us'] = us
+            self.param['qs'] = qs
 
-        # constrs = self.X_set[:]  # make a shallow copy + [
-        #     lb - slack_w <= ŵs, ŵs <= ub + slack_w,
-        #     self.Vpar_min[None, :] <= vpar_hats, vpar_hats <= self.Vpar_max[None, :]
-        # ]
-
-        obj = cp.Minimize(cp_triangle_norm_sq(X-Xprev)
-                          + self.alpha * slack_w)
+        obj = cp.Minimize(cp_triangle_norm_sq(X-Xprev) + self.alpha * slack_w)
         self.prob = cp.Problem(objective=obj, constraints=constrs)
 
         # if cp.Problem is DPP, then it can be compiled for speedup
         # - http://cvxpy.org/tutorial/advanced/index.html#disciplined-parametrized-programming  # noqa
         self.log.write(f'CBC prob is DPP?: {self.prob.is_dcp(dpp=True)}')
-
-        # self.param_Xprev = Xprev
-        # self.param_vs = vs
-        # self.param_Δvs = Δvs
-        # self.param_us = us
-        # self.param_qs = qs
 
     def add_obs(self, t: int) -> None:
         """
@@ -204,16 +218,19 @@ class CBCProjection(CBCBase):
                 self.ts_updated.append(t)
                 self.log.write(f't = {t:6d}, CBC pre opt: {msg}')
 
-        if t >= 2:
-            check_informative(t=t-1, b=self.Δv, c=self.u, useful=self.w_inds)
-            check_informative(t=t, b=self.v, c=self.q, useful=self.vpar_inds)
+        if self.prune_constraints:
+            if t >= 2:
+                check_informative(t=t-1, b=self.Δv, c=self.u, useful=self.w_inds)
+                check_informative(t=t, b=self.v, c=self.q, useful=self.vpar_inds)
 
-        if t % 500 == 0:
-            num_w_inds = tuple(np.sum(self.w_inds[:t], axis=1))
-            num_vpar_inds = tuple(np.sum(self.vpar_inds[:t+1], axis=1))
-            self.log.write(f'active constraints - w: {num_w_inds}/{t}, vpar: {num_vpar_inds}/{t}')
+            if t % 500 == 0:
+                num_w_inds = tuple(np.sum(self.w_inds[:t], axis=1))
+                num_vpar_inds = tuple(np.sum(self.vpar_inds[:t+1], axis=1))
+                self.log.write(f'active constraints - w: {num_w_inds}/{t}, '
+                               f'vpar: {num_vpar_inds}/{t}')
 
-    def _check_newest_obs(self, t: int, X_test: np.ndarray | None = None) -> tuple[bool, str]:
+    def _check_newest_obs(self, t: int, X_test: np.ndarray | None = None
+                          ) -> tuple[bool, str]:
         """Checks whether self.X_cache (or X_test, if given) satisfies the
         newest observation: (v[t], q[t], u[t-1], Δv[t-1])
 
@@ -221,8 +238,9 @@ class CBCProjection(CBCBase):
         up to 0.05 of constraint violation, so we allow for that here.
 
         Returns
-        - satisfied: bool, whether self.X_cache satisfies the newest observation
-        - msg: str, (if not satisfied) describes which constraints are not satisfied,
+        - satisfied: bool, whether self.X_cache (or X_test, if given) satisfies
+            the newest observation
+        - msg: str, (if not satisfied) describes which constraints are violated
             (if satisfied) is empty string ''
         """
         X = self.X_cache if X_test is None else X_test
@@ -282,45 +300,47 @@ class CBCProjection(CBCBase):
 
         # when t < self.nsamples
         if t < self.nsamples:
-            for b in ['lb', 'ub']:
-                self.param[f'vs_{b}'].value = np.tile(self.Vpar_min, [self.nsamples, 1])
-                self.param[f'vs_{b}'].value[:t] = self.v[1:1+t]
-                self.param[f'Δvs_{b}'].value = self.Δv[:self.nsamples]
-                self.param[f'us_{b}'].value = self.u[:self.nsamples]
-                self.param[f'qs_{b}'].value = self.q[1:1+self.nsamples]
+            if self.prune_constraints:
+                for b in ['lb', 'ub']:
+                    self.param[f'vs_{b}'].value = np.tile(self.Vpar_min, [self.nsamples, 1])
+                    self.param[f'vs_{b}'].value[:t] = self.v[1:1+t]
+                    self.param[f'Δvs_{b}'].value = self.Δv[:self.nsamples]
+                    self.param[f'us_{b}'].value = self.u[:self.nsamples]
+                    self.param[f'qs_{b}'].value = self.q[1:1+self.nsamples]
+            else:
+                self.param['vs'].value = np.tile(self.Vpar_min, [self.nsamples, 1])
+                self.param['vs'].value[:t] = self.v[1:1+t]
+                self.param['Δvs'].value = self.Δv[:self.nsamples]
+                self.param['us'].value = self.u[:self.nsamples]
+                self.param['qs'].value = self.q[1:1+self.nsamples]
 
         # when t >= self.nsamples
         else:
-            # perform random sampling
-            # - use the most recent k time steps  [t-k, ..., t-1]
-            # - then sample additional previous time steps for self.nsamples total
-            #   [0, ..., t-k-1]
+            # always include the most recent k time steps  [t-k, ..., t-1]
             k = min(self.nsamples, 20)
-            # ts = np.concatenate([
-            #     np.arange(t-k, t),
-            #     rng.choice(t-k, size=self.nsamples-k, replace=False)])
 
-            for i, b in enumerate(['lb', 'ub']):
-                w_inds = self.w_inds[i, :t].nonzero()[0]
-                ts = sample_ts(self.rng, w_inds, total=self.nsamples,
+            if self.prune_constraints:
+                for i, b in enumerate(['lb', 'ub']):
+                    w_inds = self.w_inds[i, :t].nonzero()[0]
+                    ts = sample_ts(self.rng, w_inds, total=self.nsamples,
+                                   num_recent=k, num_update=0)
+                    self.param[f'Δvs_{b}'].value = self.Δv[ts]
+                    self.param[f'us_{b}'].value = self.u[ts]
+
+                    vpar_inds = self.vpar_inds[i, :t+1].nonzero()[0]
+                    ts = sample_ts(self.rng, vpar_inds, total=self.nsamples,
+                                   num_recent=k, num_update=0)
+                    self.param[f'vs_{b}'].value = self.v[ts]
+                    self.param[f'qs_{b}'].value = self.q[ts]
+
+            else:
+                ts = sample_ts(self.rng, np.arange(t), total=self.nsamples,
                                num_recent=k, num_update=0)
+                self.param['Δvs'].value = self.Δv[ts]
+                self.param['us'].value = self.u[ts]
+                self.param['vs'].value = self.v[ts+1]
+                self.param['qs'].value = self.q[ts+1]
 
-                self.param[f'Δvs_{b}'].value = self.Δv[ts]
-                self.param[f'us_{b}'].value = self.u[ts]
-
-                vpar_inds = self.vpar_inds[i, :t+1].nonzero()[0]
-                ts = sample_ts(self.rng, vpar_inds, total=self.nsamples,
-                               num_recent=k, num_update=0)
-
-                self.param[f'vs_{b}'].value = self.v[ts]
-                self.param[f'qs_{b}'].value = self.q[ts]
-
-            # self.param_vs.value = self.v[ts+1]
-            # self.param_Δvs.value = self.Δv[ts]
-            # self.param_us.value = self.us[ts]
-            # self.param_qs.value = self.q[ts+1]
-
-        # self.param_Xprev.value = self.X_cache
         self.param['Xprev'].value = self.X_cache
 
         solve_prob(self.prob, log=self.log, name='CBC', indent=indent)
@@ -348,6 +368,7 @@ class CBCProjectionWithNoise(CBCProjection):
                  Vpar: tuple[np.ndarray, np.ndarray],
                  X_true: np.ndarray,
                  obs_nodes: Sequence[int] | None = None,
+                 prune_constraints: bool = False,
                  log: tqdm | io.TextIOBase | None = None, seed: int = 123):
         """
         Args:
@@ -362,11 +383,11 @@ class CBCProjectionWithNoise(CBCProjection):
         self.δ = δ
         alpha = 0
         super().__init__(n, T, X_init, v, gen_X_set, eta, nsamples, alpha,
-                         Vpar, X_true, obs_nodes, log, seed)
+                         Vpar, X_true, obs_nodes, prune_constraints, log, seed)
         self.eta = 0  # cached value
 
     def _setup_prob(self) -> None:
-        """Defines self.prob as the projection of Xprev into the consistent set.
+        """Defines self.prob as the projection of Xprev into consistent set.
         """
         n = self.n
         ub = self.var_eta
@@ -383,32 +404,54 @@ class CBCProjectionWithNoise(CBCProjection):
 
         Xprev = cp.Parameter((n, n), PSD=True, name='Xprev')
         etaprev = cp.Parameter(nonneg=True, name='etaprev')
-        for b in ['lb', 'ub']:
-            vs = cp.Parameter((self.nsamples, n), name=f'vs_{b}')
-            Δvs = cp.Parameter((self.nsamples, n), name=f'Δvs_{b}')
-            us = cp.Parameter((self.nsamples, n), name=f'us_{b}')
-            qs = cp.Parameter((self.nsamples, n), name=f'qs_{b}')
+        self.param['Xprev'] = Xprev
+        self.param['etaprev'] = etaprev
+
+        if self.prune_constraints:
+            for b in ['lb', 'ub']:
+                vs = cp.Parameter((self.nsamples, n), name=f'vs_{b}')
+                Δvs = cp.Parameter((self.nsamples, n), name=f'Δvs_{b}')
+                us = cp.Parameter((self.nsamples, n), name=f'us_{b}')
+                qs = cp.Parameter((self.nsamples, n), name=f'qs_{b}')
+
+                ŵs = Δvs - us @ X
+                vpar_hats = vs - qs @ X
+
+                if b == 'lb':
+                    constrs.extend([
+                        lb <= ŵs[:, obs],
+                        self.Vpar_min[None, obs] <= vpar_hats[:, obs]
+                    ])
+                else:
+                    constrs.extend([
+                        ŵs[:, obs] <= ub,
+                        vpar_hats[:, obs] <= self.Vpar_max[None, obs]
+                    ])
+
+                self.param[f'vs_{b}'] = vs
+                self.param[f'Δvs_{b}'] = Δvs
+                self.param[f'us_{b}'] = us
+                self.param[f'qs_{b}'] = qs
+
+        else:
+            vs = cp.Parameter((self.nsamples, n), name='vs')
+            Δvs = cp.Parameter((self.nsamples, n), name='Δvs')
+            us = cp.Parameter((self.nsamples, n), name='us')
+            qs = cp.Parameter((self.nsamples, n), name='qs')
 
             ŵs = Δvs - us @ X
             vpar_hats = vs - qs @ X
 
-            if b == 'lb':
-                constrs.extend([
-                    lb <= ŵs,
-                    self.Vpar_min[None, obs] <= vpar_hats[:, obs]
-                ])
-            else:
-                constrs.extend([
-                    ŵs <= ub,
-                    vpar_hats[:, obs] <= self.Vpar_max[None, obs]
-                ])
+            constrs.extend([
+                lb <= ŵs[:, obs], ŵs[:, obs] <= ub,
+                self.Vpar_min[None, obs] <= vpar_hats[:, obs],
+                vpar_hats[:, obs] <= self.Vpar_max[None, obs]
+            ])
 
-            self.param[f'vs_{b}'] = vs
-            self.param[f'Δvs_{b}'] = Δvs
-            self.param[f'us_{b}'] = us
-            self.param[f'qs_{b}'] = qs
-        self.param['Xprev'] = Xprev
-        self.param['etaprev'] = etaprev
+            self.param['vs'] = vs
+            self.param['Δvs'] = Δvs
+            self.param['us'] = us
+            self.param['qs'] = qs
 
         obj = cp.Minimize(cp_triangle_norm_sq(X-Xprev)
                           + (self.δ * (var_eta - etaprev))**2)
@@ -439,35 +482,46 @@ class CBCProjectionWithNoise(CBCProjection):
 
         # when t < self.nsamples
         if t < self.nsamples:
-            for b in ['lb', 'ub']:
-                self.param[f'vs_{b}'].value = np.tile(self.Vpar_min, [self.nsamples, 1])
-                self.param[f'vs_{b}'].value[:t] = self.v[1:1+t]
-                self.param[f'Δvs_{b}'].value = self.Δv[:self.nsamples]
-                self.param[f'us_{b}'].value = self.u[:self.nsamples]
-                self.param[f'qs_{b}'].value = self.q[1:1+self.nsamples]
+            if self.prune_constraints:
+                for b in ['lb', 'ub']:
+                    self.param[f'vs_{b}'].value = np.tile(self.Vpar_min, [self.nsamples, 1])
+                    self.param[f'vs_{b}'].value[:t] = self.v[1:1+t]
+                    self.param[f'Δvs_{b}'].value = self.Δv[:self.nsamples]
+                    self.param[f'us_{b}'].value = self.u[:self.nsamples]
+                    self.param[f'qs_{b}'].value = self.q[1:1+self.nsamples]
+            else:
+                self.param['vs'].value = np.tile(self.Vpar_min, [self.nsamples, 1])
+                self.param['vs'].value[:t] = self.v[1:1+t]
+                self.param['Δvs'].value = self.Δv[:self.nsamples]
+                self.param['us'].value = self.u[:self.nsamples]
+                self.param['qs'].value = self.q[1:1+self.nsamples]
 
         # when t >= self.nsamples
         else:
-            # perform random sampling
-            # - use the most recent k time steps  [t-k, ..., t-1]
-            # - then sample additional previous time steps for self.nsamples total
-            #   [0, ..., t-k-1]
+            # always include the most recent k time steps  [t-k, ..., t-1]
             k = min(self.nsamples, 20)
 
-            for i, b in enumerate(['lb', 'ub']):
-                w_inds = self.w_inds[i, :t].nonzero()[0]
-                ts = sample_ts(self.rng, w_inds, total=self.nsamples,
+            if self.prune_constraints:
+                for i, b in enumerate(['lb', 'ub']):
+                    w_inds = self.w_inds[i, :t].nonzero()[0]
+                    ts = sample_ts(self.rng, w_inds, total=self.nsamples,
+                                   num_recent=k, num_update=0)
+                    self.param[f'Δvs_{b}'].value = self.Δv[ts]
+                    self.param[f'us_{b}'].value = self.u[ts]
+
+                    vpar_inds = self.vpar_inds[i, :t+1].nonzero()[0]
+                    ts = sample_ts(self.rng, vpar_inds, total=self.nsamples,
+                                   num_recent=k, num_update=0)
+                    self.param[f'vs_{b}'].value = self.v[ts]
+                    self.param[f'qs_{b}'].value = self.q[ts]
+
+            else:
+                ts = sample_ts(self.rng, np.arange(t), total=self.nsamples,
                                num_recent=k, num_update=0)
-
-                self.param[f'Δvs_{b}'].value = self.Δv[ts]
-                self.param[f'us_{b}'].value = self.u[ts]
-
-                vpar_inds = self.vpar_inds[i, :t+1].nonzero()[0]
-                ts = sample_ts(self.rng, vpar_inds, total=self.nsamples,
-                               num_recent=k, num_update=0)
-
-                self.param[f'vs_{b}'].value = self.v[ts]
-                self.param[f'qs_{b}'].value = self.q[ts]
+                self.param['Δvs'].value = self.Δv[ts]
+                self.param['us'].value = self.u[ts]
+                self.param['vs'].value = self.v[ts+1]
+                self.param['qs'].value = self.q[ts+1]
 
         self.param['Xprev'].value = self.X_cache
         self.param['etaprev'].value = self.eta

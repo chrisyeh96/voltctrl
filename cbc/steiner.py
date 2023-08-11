@@ -9,6 +9,7 @@ import numpy as np
 from tqdm.auto import tqdm
 
 from cbc.base import CBCBase
+from cbc.projection import check_informative, sample_ts
 from network_utils import make_pd_and_pos
 from utils import solve_prob
 
@@ -22,14 +23,15 @@ class CBCSteiner(CBCBase):
                  eta: float, nsamples: int, nsamples_steiner: int,
                  Vpar: tuple[np.ndarray, np.ndarray],
                  X_true: np.ndarray, obs_nodes: Sequence[int] | None = None,
+                 prune_constraints: bool = False,
                  log: tqdm | io.TextIOBase | None = None, seed: int = 123):
         """
         Args
         - see CBCBase for descriptions of other parameters
         - eta: float, noise bound
         - nsamples: int, # of observations to use for defining the convex set
-        - nsamples_steiner: int, # of random directions to use for estimating the
-            Steiner point integral
+        - nsamples_steiner: int, # of random directions to use for estimating
+            the Steiner point integral
         - Vpar: tuple (Vpar_min, Vpar_max), box description of Vpar
             - each Vpar_* is a np.array of shape [n]
         - seed: int, random seed
@@ -43,10 +45,12 @@ class CBCSteiner(CBCBase):
         self.nsamples = nsamples
         self.nsamples_steiner = nsamples_steiner
 
-        self.w_inds = np.zeros([2, T-1], dtype=bool)  # whether each (u(t), Δv(t)) is useful
-        self.vpar_inds = np.zeros([2, T], dtype=bool)  # whether each (v(t), q(t)) is useful
-        self.w_inds[:, 0] = True
-        self.vpar_inds[:, 1] = True
+        self.prune_constraints = prune_constraints
+        if prune_constraints:
+            self.w_inds = np.zeros([2, T-1], dtype=bool)  # whether each (u(t), Δv(t)) is useful
+            self.vpar_inds = np.zeros([2, T], dtype=bool)  # whether each (v(t), q(t)) is useful
+            self.w_inds[:, 0] = True
+            self.vpar_inds[:, 1] = True
 
         self.var_slack_w = cp.Variable(nonneg=True)  # nonneg=True
         self.Vpar_min, self.Vpar_max = Vpar
@@ -94,68 +98,65 @@ class CBCSteiner(CBCBase):
         # optimization variable
         X = self.var_X
 
-        constrs = self.X_set
+        constrs = self.X_set[:]  # make a shallow copy
         obs = self.obs_nodes
         self.param = {}
-        for b in ['lb', 'ub']:
-            vs = cp.Parameter((self.nsamples, n), name=f'vs_{b}')
-            Δvs = cp.Parameter((self.nsamples, n), name=f'Δvs_{b}')
-            us = cp.Parameter((self.nsamples, n), name=f'us_{b}')
-            qs = cp.Parameter((self.nsamples, n), name=f'qs_{b}')
+
+        theta = cp.Parameter(self.dim)  # vector
+        self.param['theta'] = theta
+
+        if self.prune_constraints:
+            for b in ['lb', 'ub']:
+                vs = cp.Parameter((self.nsamples, n), name=f'vs_{b}')
+                Δvs = cp.Parameter((self.nsamples, n), name=f'Δvs_{b}')
+                us = cp.Parameter((self.nsamples, n), name=f'us_{b}')
+                qs = cp.Parameter((self.nsamples, n), name=f'qs_{b}')
+
+                ŵs = Δvs - us @ X
+                vpar_hats = vs - qs @ X
+
+                if b == 'lb':
+                    constrs.extend([
+                        lb <= ŵs[:, obs],
+                        self.Vpar_min[None, obs] <= vpar_hats[:, obs]
+                    ])
+                else:
+                    constrs.extend([
+                        ŵs[:, obs] <= ub,
+                        vpar_hats[:, obs] <= self.Vpar_max[None, obs]
+                    ])
+
+                self.param[f'vs_{b}'] = vs
+                self.param[f'Δvs_{b}'] = Δvs
+                self.param[f'us_{b}'] = us
+                self.param[f'qs_{b}'] = qs
+        else:
+            vs = cp.Parameter((self.nsamples, n), name='vs')
+            Δvs = cp.Parameter((self.nsamples, n), name='Δvs')
+            us = cp.Parameter((self.nsamples, n), name='us')
+            qs = cp.Parameter((self.nsamples, n), name='qs')
 
             ŵs = Δvs - us @ X
             vpar_hats = vs - qs @ X
 
-            if b == 'lb':
-                constrs.extend([lb <= ŵs,
-                                self.Vpar_min[None, obs] <= vpar_hats[:, obs]])
-            else:
-                constrs.extend([ŵs <= ub,
-                                vpar_hats[:, obs] <= self.Vpar_max[None, obs]])
+            constrs.extend([
+                lb <= ŵs[:, obs], ŵs[:, obs] <= ub,
+                self.Vpar_min[None, obs] <= vpar_hats[:, obs],
+                vpar_hats[:, obs] <= self.Vpar_max[None, obs]
+            ])
 
-            self.param[f'vs_{b}'] = vs
-            self.param[f'Δvs_{b}'] = Δvs
-            self.param[f'us_{b}'] = us
-            self.param[f'qs_{b}'] = qs
+            self.param['vs'] = vs
+            self.param['Δvs'] = Δvs
+            self.param['us'] = us
+            self.param['qs'] = qs
 
-        theta = cp.Parameter(self.dim)  # vector
         obj = cp.Maximize(theta[:-n] @ cp.upper_tri(X) + theta[-n:] @ cp.diag(X))
         self.prob = cp.Problem(objective=obj, constraints=constrs)
-
-        self.param['theta'] = theta
 
         # if cp.Problem is DPP, then it can be compiled for speedup
         # - http://cvxpy.org/tutorial/advanced/index.html#disciplined-parametrized-programming  # noqa
         self.log.write(f'CBC prob is DPP?: {self.prob.is_dcp(dpp=True)}')
         assert self.prob.is_dcp(dpp=True)
-
-    def _check_informative(self, t: int, b: np.ndarray, c: np.ndarray,
-                           useful: np.ndarray) -> None:
-        """Checks whether b[t], c[t] are useful.
-
-        Args
-        - t: int
-        - b, c: np.ndarray, shape [T, n]
-        - useful: np.ndarray, shape [2, T], boolean indexing vector
-            - 1st row is for lower bound, 2nd row is for upper bound
-        """
-        # manage constraints of the form: d <= b - X c
-        # - each previous point (b',c') is useful if (b' ⋡ b) or (c' ⋠ c)
-        # - new point is useful if no other point has (b' ≼ b and c' ≽ c)
-        useful_lb = useful[0]
-        cmp_b = (b[t] >= b[useful_lb])
-        cmp_c = (c[t] <= c[useful_lb])
-        useful_lb[useful_lb] = np.any(cmp_b, axis=1) | np.any(cmp_c, axis=1)
-        useful_lb[t] = ~np.any(np.all(cmp_b, axis=1) & np.all(cmp_c, axis=1))
-
-        # manage constraints of the form: b - X c <= d
-        # - each previous point (b',c') is useful if (b' ⋠ b) or (c' ⋡ c)
-        # - new point is useful if no other point has (b' ≽ b and c' ≼ c)
-        useful_ub = useful[1]
-        cmp_b = (b[t] <= b[useful_ub])
-        cmp_c = (c[t] >= c[useful_ub])
-        useful_ub[useful_ub] = np.any(cmp_b, axis=1) | np.any(cmp_c, axis=1)
-        useful_ub[t] = ~np.any(np.all(cmp_b, axis=1) & np.all(cmp_c, axis=1))
 
     def add_obs(self, t: int) -> None:
         """
@@ -175,24 +176,26 @@ class CBCSteiner(CBCBase):
                 self.is_cached = False
                 self.log.write(f't = {t:6d}, CBC pre opt: {msg}')
 
-        if t >= 2:
-            self._check_informative(t=t-1, b=self.Δv, c=self.u, useful=self.w_inds)
-            self._check_informative(t=t, b=self.v, c=self.q, useful=self.vpar_inds)
+        if self.prune_constraints:
+            if t >= 2:
+                check_informative(t=t-1, b=self.Δv, c=self.u, useful=self.w_inds)
+                check_informative(t=t, b=self.v, c=self.q, useful=self.vpar_inds)
 
-        # cmp_delta = (Δv <= self.Δv[self.w_inds_ub])
-        # cmp_u = (u >= self.us[self.w_inds_ub])
-        # self.w_inds_ub[self.w_inds_ub] = np.any(cmp_delta, axis=1) | np.any(cmp_u, axis=1)
-        # self.w_inds_ub[t] = ~np.any(np.all(cmp_delta, axis=1) & np.all(cmp_u, axis=1))
+            # cmp_delta = (Δv <= self.Δv[self.w_inds_ub])
+            # cmp_u = (u >= self.us[self.w_inds_ub])
+            # self.w_inds_ub[self.w_inds_ub] = np.any(cmp_delta, axis=1) | np.any(cmp_u, axis=1)
+            # self.w_inds_ub[t] = ~np.any(np.all(cmp_delta, axis=1) & np.all(cmp_u, axis=1))
 
-        # cmp_v = (v <= self.v[self.vpar_inds_ub])
-        # cmp_q = (q >= self.q[self.vpar_inds_ub])
-        # self.vpar_inds_ub[self.self.vpar_inds_ub] = np.any(cmp_v, axis=1) | np.any(cmp_u, axis=1)
-        # self.vpar_inds_ub[t] = ~np.any(np.all(cmp_delta, axis=1) & np.all(cmp_u, axis=1))
+            # cmp_v = (v <= self.v[self.vpar_inds_ub])
+            # cmp_q = (q >= self.q[self.vpar_inds_ub])
+            # self.vpar_inds_ub[self.self.vpar_inds_ub] = np.any(cmp_v, axis=1) | np.any(cmp_u, axis=1)
+            # self.vpar_inds_ub[t] = ~np.any(np.all(cmp_delta, axis=1) & np.all(cmp_u, axis=1))
 
-        if t % 500 == 0:
-            num_w_inds = tuple(np.sum(self.w_inds[:t], axis=1))
-            num_vpar_inds = tuple(np.sum(self.vpar_inds[:t+1], axis=1))
-            self.log.write(f'active constraints - w: {num_w_inds}/{t}, vpar: {num_vpar_inds}/{t}')
+            if t % 500 == 0:
+                num_w_inds = tuple(np.sum(self.w_inds[:t], axis=1))
+                num_vpar_inds = tuple(np.sum(self.vpar_inds[:t+1], axis=1))
+                self.log.write(f'active constraints - w: {num_w_inds}/{t}, '
+                               f'vpar: {num_vpar_inds}/{t}')
 
     def _check_newest_obs(self, t: int) -> tuple[bool, str]:
         """Checks whether self.X_cache satisfies the newest observation:
@@ -200,13 +203,13 @@ class CBCSteiner(CBCBase):
 
         Returns
         - satisfied: bool, whether self.X_cache satisfies the newest observation
-        - msg: str, (if not satisfied) describes which constraints are not satisfied,
+        - msg: str, (if not satisfied) describes which constraints are violated
             (if satisfied) is empty string ''
         """
         obs = self.obs_nodes
         ŵ = self.Δv[t-1] - self.u[t-1] @ self.X_cache
         vpar_hat = self.v[t] - self.q[t] @ self.X_cache
-        ŵ_norm = np.max(np.abs(ŵ))
+        ŵ_norm = np.max(np.abs(ŵ[obs]))
 
         vpar_lower_violation = np.max(self.Vpar_min[obs] - vpar_hat[obs])
         vpar_upper_violation = np.max(vpar_hat[obs] - self.Vpar_max[obs])
@@ -249,45 +252,46 @@ class CBCSteiner(CBCBase):
 
         # when t < self.nsamples
         if t < self.nsamples:
-            for b in ['lb', 'ub']:
-                self.param[f'vs_{b}'].value = np.tile(self.Vpar_min, [self.nsamples, 1])
-                self.param[f'vs_{b}'].value[:t] = self.v[1:1+t]
-                self.param[f'Δvs_{b}'].value = self.Δv[:self.nsamples]
-                self.param[f'us_{b}'].value = self.u[:self.nsamples]
-                self.param[f'qs_{b}'].value = self.q[1:1+self.nsamples]
+            if self.prune_constraints:
+                for b in ['lb', 'ub']:
+                    self.param[f'vs_{b}'].value = np.tile(self.Vpar_min, [self.nsamples, 1])
+                    self.param[f'vs_{b}'].value[:t] = self.v[1:1+t]
+                    self.param[f'Δvs_{b}'].value = self.Δv[:self.nsamples]
+                    self.param[f'us_{b}'].value = self.u[:self.nsamples]
+                    self.param[f'qs_{b}'].value = self.q[1:1+self.nsamples]
+            else:
+                self.param['vs'].value = np.tile(self.Vpar_min, [self.nsamples, 1])
+                self.param['vs'].value[:t] = self.v[1:1+t]
+                self.param['Δvs'].value = self.Δv[:self.nsamples]
+                self.param['us'].value = self.u[:self.nsamples]
+                self.param['qs'].value = self.q[1:1+self.nsamples]
 
         # when t >= self.nsamples
         else:
-            # perform random sampling
-            # - use the most recent k time steps  [t-k, ..., t-1]
-            # - then sample additional previous time steps for self.nsamples total
-            #   [0, ..., t-k-1]
+            # always include the most recent k time steps  [t-k, ..., t-1]
             k = min(self.nsamples, 20)
-            # ts = np.concatenate([
-            #     np.arange(t-k, t),
-            #     rng.choice(t-k, size=self.nsamples-k, replace=False)])
 
-            for i, b in enumerate(['lb', 'ub']):
-                w_inds = self.w_inds[i].nonzero()[0]
-                ts = np.concatenate([
-                    w_inds[-k:],
-                    self.rng.choice(len(w_inds) - k, size=self.nsamples-k, replace=False)
-                ])
-                self.param[f'Δvs_{b}'].value = self.Δv[ts]
-                self.param[f'us_{b}'].value = self.u[ts]
+            if self.prune_constraints:
+                for i, b in enumerate(['lb', 'ub']):
+                    w_inds = self.w_inds[i, :t].nonzero()[0]
+                    ts = sample_ts(self.rng, w_inds, total=self.nsamples,
+                                   num_recent=k, num_update=0)
+                    self.param[f'Δvs_{b}'].value = self.Δv[ts]
+                    self.param[f'us_{b}'].value = self.u[ts]
 
-                vpar_inds = self.vpar_inds[i].nonzero()[0]
-                ts = np.concatenate([
-                    vpar_inds[-k:],
-                    self.rng.choice(len(vpar_inds) - k, size=self.nsamples-k, replace=False)
-                ])
-                self.param[f'vs_{b}'].value = self.v[ts]
-                self.param[f'qs_{b}'].value = self.q[ts]
+                    vpar_inds = self.vpar_inds[i, :t+1].nonzero()[0]
+                    ts = sample_ts(self.rng, vpar_inds, total=self.nsamples,
+                                   num_recent=k, num_update=0)
+                    self.param[f'vs_{b}'].value = self.v[ts]
+                    self.param[f'qs_{b}'].value = self.q[ts]
 
-            # self.param_vs.value = self.v[ts+1]
-            # self.param_Δvs.value = self.Δv[ts]
-            # self.param_us.value = self.us[ts]
-            # self.param_qs.value = self.q[ts+1]
+            else:
+                ts = sample_ts(self.rng, np.arange(t), total=self.nsamples,
+                               num_recent=k, num_update=0)
+                self.param['Δvs'].value = self.Δv[ts]
+                self.param['us'].value = self.u[ts]
+                self.param['vs'].value = self.v[ts+1]
+                self.param['qs'].value = self.q[ts+1]
 
         prob = self.prob
         X_values = []

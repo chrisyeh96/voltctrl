@@ -245,7 +245,7 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
                 n=n, T=T-start, X_init=X_init, v=vpars[start],
                 gen_X_set=gen_X_set, eta=eta, nsamples=nsamples, δ=δ,
                 Vpar=Vpar, X_true=X, obs_nodes=obs_nodes, log=log, seed=seed)
-        save_dict.update(w_inds=sel.w_inds, vpar_inds=sel.vpar_inds)
+        # save_dict.update(w_inds=sel.w_inds, vpar_inds=sel.vpar_inds)
     elif cbc_alg == 'steiner':
         assert δ == 0
         dim = n * (n+1) // 2
@@ -303,7 +303,7 @@ def wrap_write_newlines(f: Any) -> Any:
 if __name__ == '__main__':
     savedir = 'out'
     # all_nodes = np.arange(55)
-    # exclude = np.array([9, 19, 22, 31, 40, 46, 55]) - 2
+    # exclude = np.array([8, 18, 21, 30, 39, 45, 54]) - 1
     # obs_nodes = np.setdiff1d(all_nodes, exclude).tolist()
     obs_nodes = None
     for seed in [8, 9, 10, 11]:  # for norm_bound=1.0, noise=1.0
