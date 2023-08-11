@@ -199,10 +199,10 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
 
     # ==== NONLINEAR MODIFICATIONS ====
     # Load nonlinear vpar (i.e., nonlinear power flow voltage without control)
-    vpars = np.load('nonlinear_voltage_baseline.npy')[:, 1:]  # shape [T, n]
+    vpars = np.load('data/nonlinear_voltage_baseline.npy')[:, 1:]  # shape [T, n]
     vpars = (vpars * 12.)**2
-    vpar_min = np.min(vpars, axis=0) - 10
-    vpar_max = np.max(vpars, axis=0) + 10
+    vpar_min = np.min(vpars, axis=0) - 0.5
+    vpar_max = np.max(vpars, axis=0) + 0.5
     Vpar = (vpar_min, vpar_max)
     # ==== NONLINEAR MODIFICATIONS ====
 

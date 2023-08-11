@@ -89,7 +89,7 @@ def robust_voltage_control(
     - q_lims: tuple (q_min, q_max), reactive power injection limits (MVar)
         - q_min, q_max could be floats, or np.arrays of shape [n]
     - v_nom: float or np.array of shape [n], desired nominal voltage
-    - env: gym environment, the nonlinear voltage simulation environment
+    - net: pandapower network, used for nonlinear voltage simulation
     - X: np.array, shape [n, n], line parameters for reactive power injection
     - R: np.array, shape [n, n], line parameters for active power injection
     - Pv: np.array, shape [n, n], quadratic (PSD) cost matrix for voltage
@@ -145,8 +145,8 @@ def robust_voltage_control(
     qcs = sel.q  # shape [T, n], qcs[t] denotes q^c(t)
     # vpars = qe @ X + p @ R + v_sub  # shape [T, n], vpars[t] denotes vpar(t)
     # assert np.array_equal(vs[0], vpars[0])
-    nonlinear_vpars = np.load('nonlinear_voltage_baseline.npy') ## nonlinear modification
-    nonlinear_vpars = (nonlinear_vpars*12.)**2
+    nonlinear_vpars = np.load('data/nonlinear_voltage_baseline.npy')[:, 1:]  # nonlinear modification
+    nonlinear_vpars = (nonlinear_vpars * 12.)**2
     assert np.array_equal(vs[0], nonlinear_vpars[0])
 
     # we need to use `u` as the variable instead of `qc_next` in order to
@@ -196,7 +196,7 @@ def robust_voltage_control(
         log.write('pbar present')
         pbar.reset(total=T-1)
 
-    params = {}
+    params: dict[int, np.ndarray | tuple[np.ndarray, float]] = {}
     for t in range(T-1):  # t = 0, ..., T-2
         # fill in Parameters
         if δ > 0:  # learning eta
@@ -207,16 +207,15 @@ def robust_voltage_control(
             if (t+1) % save_params_every == 0:
                 params[t] = (np.array(X̂.value), etahat_prev)
         else:
-            X̂.value = sel.select(t) ##TODO: change back to adaptive algorithm!
-            # X̂.value = X
-            satisfied, msg = sel._check_newest_obs(t, X)
+            X̂.value = sel.select(t)
+            update_dists(dists, t, X_info=(X̂.value, X̂_prev, X), log=log)
             if (t+1) % save_params_every == 0:
                 params[t] = np.array(X̂.value)  # save a copy
 
-            if not satisfied:
+            # satisfied, msg = sel._check_newest_obs(t, X)
+            # if not satisfied:
                 # print(msg)
-                log.write(f't={t} linear X does not satisfy the nonlinear constraints: {msg}')
-            update_dists(dists, t, X̂.value, X̂_prev, X, log=log)
+                # log.write(f't={t} linear X* does not satisfy the nonlinear constraints: {msg}')
 
         X̂_prev = np.array(X̂.value)  # save a copy
         qct.value = qcs[t]
@@ -263,7 +262,7 @@ def robust_voltage_control(
     # update voltplot at the end of run
     if volt_plot is not None:
         volt_plot.update(qcs=qcs, vs=np.sqrt(vs), vpars=np.sqrt(nonlinear_vpars),
-                         dists=(dists['t'], dists['true']))
+                         dists=(dists['t'], dists['X_true']))
         volt_plot.show(clear_display=False)
 
     return vs, qcs, dists, params, check_prediction
