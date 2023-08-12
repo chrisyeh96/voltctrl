@@ -2,21 +2,23 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 import io
-import os
 from typing import Any
 
 import cvxpy as cp
 import numpy as np
+import pandapower as pp
 import scipy.io as spio
 from tqdm.auto import tqdm
 
 from network_utils import np_triangle_norm
+from robust_voltage_control import update_dists
+from utils import solve_prob
 from voltplot import VoltPlot
 
 
 # ==== BEGINNING OF NONLINEAR MODIFICATIONS: loading data ====
 # active and reactive load data
-load = spio.loadmat(os.path.join(os.path.dirname(__file__), 'orig_data/loadavail20150908.mat'), squeeze_me=True)
+load = spio.loadmat('orig_data/loadavail20150908.mat', squeeze_me=True)
 scale = 1.1
 load_p = np.stack(load['Load']['kW']) / 1000  # to MW
 load_p *= scale
@@ -31,7 +33,7 @@ N = 55
 gen_p = np.zeros((N, T))
 gen_q = np.zeros((N, T))
 
-solar_orig = spio.loadmat(os.path.join(os.path.dirname(__file__),'orig_data/pvavail20150908_2.mat'), squeeze_me=True)
+solar_orig = spio.loadmat('orig_data/pvavail20150908_2.mat', squeeze_me=True)
 capacities = np.array([
     9.97, 11.36, 13.53, 6.349206814, 106.142148, 154, 600, 293.54, 66.045,
     121.588489, 12.94935415, 19.35015173, 100, 31.17327501, 13.06234596,
@@ -49,8 +51,8 @@ solar_index = np.array([9,12,14,16,19,10,11,13,15,7,2,4,20,23,25,26,32,8]) - 2
 gen_p[solar_index,:] = pv
 
 # Check data
-solar = spio.loadmat(os.path.join(os.path.dirname(__file__),'data/PV.mat'), squeeze_me=True)['actual_PV_profile']  # shape [14421]
-pq_fluc = spio.loadmat(os.path.join(os.path.dirname(__file__),'data/pq_fluc.mat'), squeeze_me=True)['pq_fluc']  # shape [55, 2, 14421]
+solar = spio.loadmat('data/PV.mat', squeeze_me=True)['actual_PV_profile']  # shape [14421]
+pq_fluc = spio.loadmat('data/pq_fluc.mat', squeeze_me=True)['pq_fluc']  # shape [55, 2, 14421]
 all_p = pq_fluc[:, 0]  # shape [n, T]
 all_q = pq_fluc[:, 1]  # shape [n, T]
 nodal_injection = -load_p + gen_p
@@ -64,17 +66,19 @@ assert np.allclose(gen_p.sum(axis=0), solar)
 def robust_voltage_control(
         p: np.ndarray, qe: np.ndarray,
         v_lims: tuple[Any, Any], q_lims: tuple[Any, Any], v_nom: Any,
-        env: Any,
+        net: pp.pandapowerNet,
         X: np.ndarray, R: np.ndarray,
         Pv: np.ndarray, Pu: np.ndarray,
-        eta: float | None, eps: float, v_sub: float, beta: float,
-        sel: Any, pbar: tqdm | None = None,
+        eta: float, ε: float, v_sub: float, β: float,
+        sel: Any, δ: float = 0.,
         ctrl_nodes: Sequence[int] | None = None,
+        pbar: tqdm | None = None,
         log: tqdm | io.TextIOBase | None = None,
         volt_plot: VoltPlot | None = None, volt_plot_update: int = 100,
-        save_Xhat_every: int = 100
+        save_params_every: int = 100
         ) -> tuple[np.ndarray, np.ndarray, dict[str, list],
-                   dict[int, np.ndarray], dict[str, list]]:
+                   dict[int, np.ndarray | tuple[np.ndarray, float]],
+                   dict[str, list]]:
     """Runs robust voltage control.
 
     Args
@@ -85,34 +89,40 @@ def robust_voltage_control(
     - q_lims: tuple (q_min, q_max), reactive power injection limits (MVar)
         - q_min, q_max could be floats, or np.arrays of shape [n]
     - v_nom: float or np.array of shape [n], desired nominal voltage
-    - env: gym environment, the nonlinear voltage simulation environment
+    - net: pandapower network, used for nonlinear voltage simulation
     - X: np.array, shape [n, n], line parameters for reactive power injection
     - R: np.array, shape [n, n], line parameters for active power injection
     - Pv: np.array, shape [n, n], quadratic (PSD) cost matrix for voltage
     - Pu: np.array, shape [n, n], quadratic (PSD) cost matrix for control
     - eta: float, noise bound (kV^2)
-        - if None, assumes that eta is a model parameter that will be returned
-          by `sel`
-    - eps: float, robustness buffer (kV^2)
+    - ε: float, robustness buffer (kV^2)
     - v_sub: float, fixed squared voltage magnitude at substation (kV^2)
+    - β: float, weight for slack variable
     - sel: nested convex body chasing object (e.g., CBCProjection)
+    - δ: float, weight of noise term in CBC norm when learning eta
+        - set to 0 if eta is known
     - ctrl_nodes: list of int, nodes that we can control voltages for
     - pbar: optional tqdm, progress bar
+    - log: optional log output
     - volt_plot: VoltPlot
     - volt_plot_update: int, time steps between updating volt_plot
-    - save_Xhat_every: int, time steps between saving estiamted Xhat model
+    - save_params_every: int, time steps between saving estimated model params
 
     Returns
     - vs: np.array, shape [T, n]
     - qcs: np.array, shape [T, n]
-    - dists: dict, keys ['t', 'true', 'prev'], values are lists
+    - dists: dict, keys ['t', '*_true', '*_prev'], values are lists
         - 't': list of int, time steps at which model updates occurred,
-            i.e., X̂(t) != X̂(t-1). X̂(t) is generated by data up to and including
-            v(t), q^c(t), u(t-1)
-        - 'true': list of float, ||X̂-X||_△ after each model update
-        - 'prev': list of float, ||X̂(t)-X̂(t-1)||_△ after each model update
-    - X_hats: dict, keys are time steps, values are np.array, shape [n, n]
-        - X_hats[t] is the estimated model after observing vs[t], qcs[t]
+            i.e., X̂(t) != X̂(t-1). X̂(t) is generated by data up to and
+            including v(t), q^c(t), u(t-1)
+        - '*_true': list of float, ‖X̂-X‖_△ after each model update
+            (and likewise for η and (X,η), if learning η)
+        - '*_prev': list of float, ‖X̂(t)-X̂(t-1)‖_△ after each model update
+            (and likewise for η and (X,η), if learning η)
+    - params: dict, keys are time step t, values the estimated model params
+        after observing vs[t], qcs[t].
+        - if delta is None: np.array, shape [n, n]
+        - if delta is given: tuple of (np.ndarray, float)
     - check_prediction: dict, maps keys ('adaptive_linear', 'fixed_optimal_linear')
         to lists of prediction error (scalars)
     """
@@ -122,55 +132,54 @@ def robust_voltage_control(
     if log is None:
         log = tqdm()
 
-    log.write(f'||X||_△ = {np_triangle_norm(X):.2f}')
+    log.write(f'‖X‖_△ = {np_triangle_norm(X):.2f}')
 
-    dists: dict[str, list] = {'t': [], 'true': [], 'prev': []}
+    dists: dict[str, list] = {'t': [], 'X_true': [], 'X_prev': []}
     check_prediction: dict[str, list] = {'adaptive_linear':[], 'fixed_optimal_linear':[]}
     X̂_prev = None
 
     v_min, v_max = v_lims
     q_min, q_max = q_lims
 
-    if eta is None:
-        raise NotImplementedError  # we currently don't support learning eta
-        # is_learning_eta = True
-        # rho = eps / (2 + 2 * np.linalg.norm(np.ones(n) * (q_max-q_min), ord=2))
-        # etahat_prev = None
-    else:
-        is_learning_eta = False
-        rho = eps / (2 * np.linalg.norm(np.ones(n) * (q_max-q_min), ord=2))
-    log.write(f'rho(eps={eps:.2f}) = {rho:.3f}')
-
     vs = sel.v  # shape [T, n], vs[t] denotes v(t)
     qcs = sel.q  # shape [T, n], qcs[t] denotes q^c(t)
     # vpars = qe @ X + p @ R + v_sub  # shape [T, n], vpars[t] denotes vpar(t)
     # assert np.array_equal(vs[0], vpars[0])
-    nonlinear_vpars = np.load('nonlinear_voltage_baseline.npy') ## nonlinear modification
-    nonlinear_vpars = (nonlinear_vpars*12.)**2
+    nonlinear_vpars = np.load('data/nonlinear_voltage_baseline.npy')[:, 1:]  # nonlinear modification
+    nonlinear_vpars = (nonlinear_vpars * 12.)**2
     assert np.array_equal(vs[0], nonlinear_vpars[0])
 
     # we need to use `u` as the variable instead of `qc_next` in order to
     # make the problem DPP-convex
-    u = cp.Variable(n)
-    slack = cp.Variable(nonneg=True)
+    u = cp.Variable(n, name='u')
+    ξ = cp.Variable(nonneg=True, name='ξ')  # slack variable
+
+    q_norm_2 = np.linalg.norm(np.ones(n) * (q_max-q_min), ord=2)
+    if δ > 0:  # learning eta
+        dists |= {'η': [], 'η_prev': [], 'X_η_prev': []}
+        etahat_prev = None
+        rho = ε * δ / (1 + δ * q_norm_2)
+        etahat = cp.Parameter(nonneg=True, name='̂η')
+        k = etahat + rho * (1/δ + cp.norm2(u))
+    else:
+        rho = ε / q_norm_2
+        k = eta + rho * cp.norm(u, p=2)
+    log.write(f'rho(ε={ε:.2f}) = {rho:.3f}')
 
     # parameters are placeholders for given values
-    vt = cp.Parameter((n,))
-    qct = cp.Parameter((n,))
-    X̂ = cp.Parameter((n, n), PSD=True)
-    # if eta is None:
-    #     eta = cp.Parameter(nonneg=True)
+    vt = cp.Parameter(n, name='v')
+    qct = cp.Parameter(n, name='qc')
+    X̂ = cp.Parameter((n, n), PSD=True, name='X̂')
 
     qc_next = qct + u
     v_next = vt + u @ X̂
-    k = eta + rho * cp.norm(u, p=2)
 
     obj = cp.Minimize(cp.quad_form(v_next - v_nom, Pv)
                       + cp.quad_form(u, Pu)
-                      + beta * slack**2)
+                      + β * ξ**2)
     constraints = [
         q_min <= qc_next, qc_next <= q_max,
-        v_min + k - slack <= v_next, v_next <= v_max - k + slack
+        v_min + k - ξ <= v_next, v_next <= v_max - k + ξ
     ]
     if ctrl_nodes is not None:
         all_nodes = np.arange(n)
@@ -181,56 +190,53 @@ def robust_voltage_control(
     # if cp.Problem is DPP, then it can be compiled for speedup
     # - http://cvxpy.org/tutorial/advanced/index.html#disciplined-parametrized-programming
     assert prob.is_dcp(dpp=True)
-    # log.write(f'Robust Oracle prob is DPP?: {prob.is_dcp(dpp=True)}')
+    log.write(f'Robust Oracle prob is DPP?: {prob.is_dcp(dpp=True)}')
 
     if pbar is not None:
         log.write('pbar present')
         pbar.reset(total=T-1)
 
-    X_hats = {}
+    params: dict[int, np.ndarray | tuple[np.ndarray, float]] = {}
     for t in range(T-1):  # t = 0, ..., T-2
         # fill in Parameters
-        if is_learning_eta:
-            raise NotImplementedError
-            # X̂.value, eta.value = sel.select()
-            # update_dists(dists, t, X̂.value, X̂_prev, X, eta.value, etahat_prev)
-            # X̂_prev = np.array(X̂.value)  # save a copy
-            # etahat_prev = float(eta.value)  # save a copy
+        if δ > 0:  # learning eta
+            X̂.value, etahat.value = sel.select(t)
+            update_dists(dists, t, X_info=(X̂.value, X̂_prev, X),
+                         η_info=(etahat.value, etahat_prev, eta), δ=δ, log=log)
+            etahat_prev = float(etahat.value)  # save a copy
+            if (t+1) % save_params_every == 0:
+                params[t] = (np.array(X̂.value), etahat_prev)
         else:
-            X̂.value = sel.select(t) ##TODO: change back to adaptive algorithm!
-            # X̂.value = X
-            satisfied, msg = sel._check_newest_obs(t, X)
-            if (t+1) % save_Xhat_every == 0:
-                X_hats[t] = np.array(X̂.value)  # save a copy
+            X̂.value = sel.select(t)
+            update_dists(dists, t, X_info=(X̂.value, X̂_prev, X), log=log)
+            if (t+1) % save_params_every == 0:
+                params[t] = np.array(X̂.value)  # save a copy
 
-            if not satisfied:
+            # satisfied, msg = sel._check_newest_obs(t, X)
+            # if not satisfied:
                 # print(msg)
-                log.write(f't={t} linear X does not satisfy the nonlinear constraints: {msg}')
-            update_dists(dists, t, X̂.value, X̂_prev, X, log=log)
-            X̂_prev = np.array(X̂.value)  # save a copy``
+                # log.write(f't={t} linear X* does not satisfy the nonlinear constraints: {msg}')
+
+        X̂_prev = np.array(X̂.value)  # save a copy
         qct.value = qcs[t]
         vt.value = vs[t]
 
-        try:
-            prob.solve(warm_start=True, solver=cp.MOSEK, mosek_params={'MSK_IPAR_NUM_THREADS': 1})
-        except cp.SolverError:
-            log.write(f't={t}. robust oracle: default solver failed. Trying cp.ECOS')
-            prob.solve(solver=cp.ECOS)
-        if prob.status != 'optimal':
-            log.write(f't={t}. robust oracle: prob.status = {prob.status}')
-            if 'infeasible' in prob.status:
-                print('infeasible')
-                # import pdb
-                # pdb.set_trace()
+        solve_prob(prob, log=log, name=f't={t}. robust oracle')
 
         qcs[t+1] = qc_next.value
 
         # ==== BEGINNING OF NONLINEAR MODIFICATIONS ====
         # vs[t+1] = vpars[t+1] + (qc_next.value) @ X
         # print('linear: ', np.linalg.norm(vs[t+1]))
-        vs[t+1], _, _ = env.step_load_solar(
-            qc_next.value, load_p[:,t], load_q[:,t], gen_p[:,t], gen_q[:,t])
-        vs[t+1] = (12. * vs[t+1])**2
+
+        net.load['p_mw'] = load_p[:,t]
+        net.load['q_mvar'] = load_q[:,t]
+        net.sgen['p_mw'] = gen_p[:,t]
+        net.sgen['q_mvar'] = gen_q[:,t] + qc_next.value
+        pp.runpp(net, algorithm='bfsw', init='dc')
+        vnext = net.res_bus.iloc[1:].vm_pu.to_numpy()
+        vs[t+1] = (12. * vnext)**2
+
         check_prediction['fixed_optimal_linear'].append(
             np.linalg.norm(vs[t+1] - (nonlinear_vpars[t+1] + qc_next.value @ X)))
         check_prediction['adaptive_linear'].append(
@@ -239,13 +245,13 @@ def robust_voltage_control(
         # ==== END OF NONLINEAR MODIFICATIONS ====
 
         sel.add_obs(t+1)
-        # log.write(f't = {t}, ||u||_1 = {np.linalg.norm(u.value, 1)}')
+        # log.write(f't = {t}, ‖u‖_1 = {np.linalg.norm(u.value, 1)}')
 
         if volt_plot is not None and (t+1) % volt_plot_update == 0:
             volt_plot.update(qcs=qcs[:t+2],
                              vs=np.sqrt(vs[:t+2]),
                              vpars=np.sqrt(nonlinear_vpars[:t+2]),
-                             dists=(dists['t'], dists['true']))
+                             dists=(dists['t'], dists['X_true']))
             volt_plot.show(clear_display=False)
 
         if pbar is not None:
@@ -256,51 +262,7 @@ def robust_voltage_control(
     # update voltplot at the end of run
     if volt_plot is not None:
         volt_plot.update(qcs=qcs, vs=np.sqrt(vs), vpars=np.sqrt(nonlinear_vpars),
-                         dists=(dists['t'], dists['true']))
+                         dists=(dists['t'], dists['X_true']))
         volt_plot.show(clear_display=False)
 
-    return vs, qcs, dists, X_hats, check_prediction
-
-
-def update_dists(dists: dict[str, list], t: int, Xhat: np.ndarray,
-                 Xhat_prev: np.ndarray | None, X: np.ndarray,
-                 log: tqdm | io.TextIOBase | None = None,
-                 # etahat: float | None = None, etahat_prev: float | None = None
-                 ) -> None:
-    """Calculates ||X̂-X||_△ and ||X̂-X̂_prev||_△.
-
-    Args
-    - dists: dict, keys ['t', 'true', 'prev'], values are lists
-        - 't': list of int, time steps at which model updates occurred,
-            i.e., X̂(t) != X̂(t-1). X̂(t) is generated by data up to and including
-            v(t), q^c(t), u(t-1)
-        - 'true': list of float, ||X̂-X||_△ after each model update
-        - 'prev': list of float, ||X̂(t)-X̂(t-1)||_△ after each model update
-    - t: int, time step
-    - Xhat: np.array, shape [n, n]
-    - Xhat_prev: np.array, shape [n, n], or None
-        - this should generally only be None on the 1st time step
-    - X: np.array, shape [n, n]
-    """
-    # here, we rely on the fact that the CBCProjection returns the existing
-    # variable X̂ if it doesn't need to move
-    if Xhat_prev is None or not np.array_equal(Xhat, Xhat_prev):
-        dist_true = np_triangle_norm(Xhat - X)
-        msg = f't = {t:6d}, ||X̂-X||_△ = {dist_true:7.3f}'
-
-        if Xhat_prev is None:
-            dist_prev = 0.
-        else:
-            dist_prev = np_triangle_norm(Xhat - Xhat_prev)
-            msg += f', ||X̂-X̂_prev||_△ = {dist_prev:5.3f}'
-            # if etahat_prev is not None:
-            #     msg += (f', etahat = {etahat:5.3f}, '
-            #             f'|etahat - etahat_prev| = {etahat - etahat_prev:5.3f}')
-
-        if log is None:
-            log = tqdm
-        log.write(msg)
-
-        dists['t'].append(t)
-        dists['true'].append(dist_true)
-        dists['prev'].append(dist_prev)
+    return vs, qcs, dists, params, check_prediction
