@@ -15,7 +15,6 @@ import scipy.io
 warnings.filterwarnings('ignore', category=FutureWarning)
 
 T = TypeVar('T')
-Constraint = cp.constraints.constraint.Constraint
 
 
 def create_56bus() -> pp.pandapowerNet:
@@ -26,8 +25,7 @@ def create_56bus() -> pp.pandapowerNet:
 
     Returns: pp.pandapowerNet
     """
-    net = pp.converter.from_mpc(
-        'data/SCE_56bus.mat', casename_mpc_file='case_mpc')
+    net = pp.converter.from_mpc('data/SCE_56bus.mat', casename_mpc_file='case_mpc')
 
     # remove loads and generators at all buses except bus 0 (substation),
     # but keep the network lines
@@ -53,6 +51,7 @@ def create_RX_from_net(net: pp.pandapowerNet, noise: float = 0,
     - noise: float, optional add uniform noise to impedances, values in [0,1]
     - modify: str, how to modify network, one of [None, 'perm', 'linear', 'rand']
     - seed: int, for generating the uniform noise
+        seed must be provided if (noise > 0) or (modify is not None)
     - check_pd: bool, whether to assert that returned R,X are PD
 
     Returns: tuple (X, R)
@@ -69,7 +68,8 @@ def create_RX_from_net(net: pp.pandapowerNet, noise: float = 0,
     r_ohm_per_km = net.line['r_ohm_per_km'].values
     x_ohm_per_km = net.line['x_ohm_per_km'].values
 
-    rng = np.random.default_rng(seed)
+    if seed is not None:
+        rng = np.random.default_rng(seed)
 
     if noise > 0:
         # Do NOT update r/x_ohm_per_km in-place. We do not want to change
@@ -275,7 +275,7 @@ def smooth(x: np.ndarray, w: int = 5) -> np.ndarray:
 
 def calc_max_norm_w(R: np.ndarray, X: np.ndarray, p: np.ndarray, qe: np.ndarray
                     ) -> dict[str, np.ndarray]:
-    """Calculates ||w||_∞.
+    """Calculates ‖w‖_∞.
 
     Args
     - R: np.array, shape [n, n]
@@ -293,16 +293,16 @@ def calc_max_norm_w(R: np.ndarray, X: np.ndarray, p: np.ndarray, qe: np.ndarray
         'wp': np.linalg.norm(wp, ord=np.inf, axis=0),
         'wq': np.linalg.norm(wq, ord=np.inf, axis=0)
     }
-    # - max_p_idx: int, bus index with largest ||w_p||
-    # - max_q_idx: int, bus index with largest ||w_q||
+    # - max_p_idx: int, bus index with largest ‖w_p‖
+    # - max_q_idx: int, bus index with largest ‖w_q‖
     # max_p_idx = np.argmax(np.max(np.abs(wp), axis=1))
     # max_q_idx = np.argmax(np.max(np.abs(wq), axis=1))
     return norms
 
 
 def np_triangle_norm(x: np.ndarray) -> float:
-    """Computes ||X||_△"""
-    return np.linalg.norm(np.triu(x), ord='fro')
+    """Computes ‖X‖_△"""
+    return float(np.linalg.norm(np.triu(x), ord='fro'))
 
 
 def known_topology_constraints(
@@ -310,7 +310,7 @@ def known_topology_constraints(
         net: pp.pandapowerNet,
         known_line_params: int,
         known_bus_topo: int
-        ) -> list[Constraint]:
+        ) -> list[cp.Constraint]:
     """Specifies constraints on X matrix if we know the network topology
     among all buses in {1, ..., known_bus_topo}.
 
