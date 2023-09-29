@@ -15,8 +15,6 @@ from tqdm.auto import tqdm
 from cbc.base import (
     CBCBase, CBCConst, CBCConstWithNoise, cp_triangle_norm_sq,
     project_into_X_set)
-from cbc.projection import CBCProjection, CBCProjectionWithNoise
-from cbc.steiner import CBCSteiner
 from network_utils import (
     create_56bus,
     create_RX_from_net,
@@ -228,6 +226,7 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
         known_bus_topo=known_bus_topo, known_line_params=known_line_params)
 
     sel: CBCBase
+    require_X_psd = True
     if cbc_alg == 'const':
         if δ == 0:
             sel = CBCConst(
@@ -237,7 +236,15 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
             sel = CBCConstWithNoise(
                 n=n, T=T, X_init=X_init, v=vpars[start],
                 gen_X_set=gen_X_set, X_true=X, obs_nodes=obs_nodes, log=log)
+    elif cbc_alg == 'lsq':
+        assert δ == 0
+        from cbc.lsq import CBCLsq
+        sel = CBCLsq(
+            n=n, T=T, X_init=X_init, v=vpars[start],
+            gen_X_set=gen_X_set, X_true=X, obs_nodes=obs_nodes, log=log)
+        require_X_psd = False
     elif cbc_alg == 'proj':
+        from cbc.projection import CBCProjection, CBCProjectionWithNoise
         config.update(alpha=alpha, nsamples=nsamples)
         if δ == 0:
             sel = CBCProjection(
@@ -252,6 +259,7 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
         # save_dict.update(w_inds=sel.w_inds, vpar_inds=sel.vpar_inds)
     elif cbc_alg == 'steiner':
         assert δ == 0
+        from cbc.steiner import CBCSteiner
         dim = n * (n+1) // 2
         config.update(nsamples=nsamples, nsamples_steiner=dim)
         sel = CBCSteiner(
@@ -268,7 +276,7 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
     vs, qcs, dists, params, check_prediction = robust_voltage_control(
         p=p[start:T], qe=qe[start:T],
         v_lims=(v_min, v_max), q_lims=(-q_max, q_max), v_nom=v_nom, net=net,
-        X=X, R=R, Pv=Pv * np.eye(n), Pu=Pu * np.eye(n),
+        X=X, R=R, require_X_psd=require_X_psd, Pv=Pv * np.eye(n), Pu=Pu * np.eye(n),
         eta=eta, ε=ε, v_sub=v_sub, β=β, sel=sel, δ=δ,
         ctrl_nodes=ctrl_nodes, pbar=pbar, log=log,
         volt_plot=volt_plot if is_interactive else None)

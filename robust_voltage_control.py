@@ -16,7 +16,7 @@ from voltplot import VoltPlot
 def robust_voltage_control(
         p: np.ndarray, qe: np.ndarray,
         v_lims: tuple[Any, Any], q_lims: tuple[Any, Any], v_nom: Any,
-        X: np.ndarray, R: np.ndarray,
+        X: np.ndarray, R: np.ndarray, require_X_psd: bool,
         Pv: np.ndarray, Pu: np.ndarray,
         eta: float, ε: float, v_sub: float, β: float,
         sel: Any, δ: float = 0.,
@@ -39,6 +39,8 @@ def robust_voltage_control(
     - v_nom: float or np.array of shape [n], desired nominal voltage
     - X: np.array, shape [n, n], line parameters for reactive power injection
     - R: np.array, shape [n, n], line parameters for active power injection
+    - require_X_psd: bool, whether to require that selected X is always PSD
+        - should usually be True, unless using least-squares controller
     - Pv: np.array, shape [n, n], quadratic (PSD) cost matrix for voltage
     - Pu: np.array, shape [n, n], quadratic (PSD) cost matrix for control
     - eta: float, noise bound (kV^2)
@@ -110,7 +112,7 @@ def robust_voltage_control(
     # parameters are placeholders for given values
     vt = cp.Parameter(n, name='v')
     qct = cp.Parameter(n, name='qc')
-    X̂ = cp.Parameter((n, n), PSD=True, name='X̂')
+    X̂ = cp.Parameter((n, n), PSD=require_X_psd, name='X̂')
 
     qc_next = qct + u
     v_next = vt + u @ X̂

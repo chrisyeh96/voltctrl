@@ -138,10 +138,10 @@ class CBCBase:
         """Selects a model.
 
         When select() is called, we have seen t observations. That is, we have values for:
-          v(0), ...,   v(t)    # recall:   v(t) = vs[t]
-        q^c(0), ..., q^c(t)    # recall: q^c(t) = qs[t]
-          u(0), ...,   u(t-1)  # recall:   u(t) = us[t]
-         Δv(0), ...,  Δv(t-1)  # recall:  Δv(t) = Δvs[t]
+          v(0), ...,   v(t)    # recall:   v(t) = v[t]
+        q^c(0), ..., q^c(t)    # recall: q^c(t) = q[t]
+          u(0), ...,   u(t-1)  # recall:   u(t) = u[t]
+         Δv(0), ...,  Δv(t-1)  # recall:  Δv(t) = Δv[t]
 
         Args
         - t: int, current time step
