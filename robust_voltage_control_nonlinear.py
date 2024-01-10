@@ -222,6 +222,8 @@ def robust_voltage_control(
         vt.value = vs[t]
 
         solve_prob(prob, log=log, name=f't={t}. robust oracle')
+        if prob.status == 'infeasible':
+            raise RuntimeError('robust controller infeasible')
 
         qcs[t+1] = qc_next.value
 

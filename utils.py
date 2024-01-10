@@ -27,12 +27,8 @@ def solve_prob(prob: cp.Problem, log: tqdm | io.TextIOBase | None = None,
                 log.write(f'{name} trying cp.SCS instead')
             prob.solve(solver=cp.SCS)
 
-        if prob.status != 'optimal':
-            if log is not None:
-                log.write(f'{name} prob.status = {prob.status}')
-            if prob.status == 'infeasible':
-                import pdb
-                pdb.set_trace()
+        if prob.status != 'optimal' and log is not None:
+            log.write(f'{name} prob.status = {prob.status}')
 
 
 def wrap_write_newlines(f: Any) -> Any:

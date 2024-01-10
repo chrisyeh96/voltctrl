@@ -8,6 +8,7 @@ import cvxpy as cp
 import numpy as np
 from tqdm.auto import tqdm
 
+from cbc.base import CBCInfeasibleError
 from network_utils import np_triangle_norm
 from utils import solve_prob
 from voltplot import VoltPlot
@@ -143,7 +144,10 @@ def robust_voltage_control(
     for t in range(T-1):  # t = 0, ..., T-2
         # fill in Parameters
         if δ > 0:  # learning eta
-            X̂.value, etahat.value = sel.select(t)
+            try:
+                X̂.value, etahat.value = sel.select(t)
+            except CBCInfeasibleError:
+                break
             update_dists(dists, t, X_info=(X̂.value, X̂_prev, X),
                          η_info=(etahat.value, etahat_prev, eta), δ=δ, log=log)
             etahat_prev = float(etahat.value)  # save a copy
@@ -160,6 +164,8 @@ def robust_voltage_control(
         vt.value = vs[t]
 
         solve_prob(prob, log=log, name=f't={t}. robust oracle')
+        if prob.status == 'infeasible':
+            raise RuntimeError('robust controller infeasible')
 
         qcs[t+1] = qc_next.value
         vs[t+1] = vpars[t+1] + qc_next.value @ X

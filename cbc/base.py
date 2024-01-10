@@ -9,12 +9,12 @@ import cvxpy as cp
 import numpy as np
 from tqdm.auto import tqdm
 
-from network_utils import make_pd_and_pos, np_triangle_norm
+from network_utils import cp_triangle_norm_sq, make_pd_and_pos, np_triangle_norm
 from utils import solve_prob
 
 
-def cp_triangle_norm_sq(x: cp.Expression) -> cp.Expression:
-    return cp.norm(cp.upper_tri(x), 2)**2 + cp.norm(cp.diag(x), 2)**2
+class CBCInfeasibleError(Exception):
+    pass
 
 
 def project_into_X_set(X_init: np.ndarray, var_X: cp.Variable,
@@ -36,6 +36,8 @@ def project_into_X_set(X_init: np.ndarray, var_X: cp.Variable,
         obj = cp.Minimize(cp_triangle_norm_sq(X_init - var_X))
         prob = cp.Problem(objective=obj, constraints=X_set)
         solve_prob(prob, log=log, name='projecting X_init into 𝒳')
+        if prob.status == 'infeasible':
+            raise CBCInfeasibleError
         make_pd_and_pos(var_X.value)
         if log is not None:
             total_violation = sum(np.sum(constraint.violation()) for constraint in X_set)

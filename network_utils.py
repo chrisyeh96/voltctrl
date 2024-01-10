@@ -369,6 +369,10 @@ def known_topology_constraints(
     return constraints
 
 
+def cp_triangle_norm_sq(x: cp.Expression) -> cp.Expression:
+    return cp.norm(cp.upper_tri(x), 2)**2 + cp.norm(cp.diag(x), 2)**2
+
+
 def X_to_ancestors(X: np.ndarray) -> tuple[dict[int, set[int]], np.ndarray]:
     """Constructs ancestor map from X matrix.
 

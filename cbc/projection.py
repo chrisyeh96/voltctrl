@@ -8,7 +8,7 @@ import cvxpy as cp
 import numpy as np
 from tqdm.auto import tqdm
 
-from cbc.base import CBCBase, cp_triangle_norm_sq
+from cbc.base import CBCBase, CBCInfeasibleError, cp_triangle_norm_sq
 from network_utils import make_pd_and_pos
 from utils import solve_prob
 
@@ -344,6 +344,8 @@ class CBCProjection(CBCBase):
         self.param['Xprev'].value = self.X_cache
 
         solve_prob(self.prob, log=self.log, name='CBC', indent=indent)
+        if self.prob.status == 'infeasible':
+            raise CBCInfeasibleError
 
         self.X_cache = np.array(X.value)  # make a copy
         make_pd_and_pos(self.X_cache)
@@ -527,6 +529,8 @@ class CBCProjectionWithNoise(CBCProjection):
         self.param['etaprev'].value = self.eta
 
         solve_prob(self.prob, log=self.log, name='CBC', indent=indent)
+        if self.prob.status == 'infeasible':
+            raise CBCInfeasibleError
 
         self.X_cache = np.array(X.value)  # make a copy
         self.eta = float(var_eta.value)  # make a copy
