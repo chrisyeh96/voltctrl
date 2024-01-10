@@ -15,7 +15,7 @@ from cbc.base import (
     CBCBase, CBCConst, CBCConstWithNoise, project_into_X_set)
 from network_utils import (
     create_56bus, create_RX_from_net, meta_gen_X_set, read_load_data)
-from robust_voltage_control import (
+from robust_voltage_control_nonlinear import (
     VoltPlot, robust_voltage_control)
 from utils import wrap_write_newlines
 
