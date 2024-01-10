@@ -5,6 +5,7 @@ import io
 
 import cvxpy as cp
 from tqdm.auto import tqdm
+from typing import Any
 
 
 def solve_prob(prob: cp.Problem, log: tqdm | io.TextIOBase | None = None,
@@ -32,3 +33,13 @@ def solve_prob(prob: cp.Problem, log: tqdm | io.TextIOBase | None = None,
             if prob.status == 'infeasible':
                 import pdb
                 pdb.set_trace()
+
+
+def wrap_write_newlines(f: Any) -> Any:
+    old_write = f.write
+
+    def new_write(s):
+        old_write(s + '\n')
+        f.flush()
+    f.write = new_write
+    return f

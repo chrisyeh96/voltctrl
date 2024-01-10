@@ -22,8 +22,8 @@ from network_utils import (
     np_triangle_norm,
     read_load_data)
 from robust_voltage_control import (
-    VoltPlot,
-    robust_voltage_control)
+    VoltPlot, robust_voltage_control)
+from utils import wrap_write_newlines
 
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -296,16 +296,6 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
     if not is_interactive:
         log.close()
     return filename
-
-
-def wrap_write_newlines(f: Any) -> Any:
-    old_write = f.write
-
-    def new_write(s):
-        old_write(s + '\n')
-        f.flush()
-    f.write = new_write
-    return f
 
 
 if __name__ == '__main__':
