@@ -71,6 +71,10 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
     Returns: str, filename (without extension)
     """
     assert δ >= 0, 'δ must be >= 0'
+    if known_line_params > 0:
+        assert f'knownlines{known_line_params}' in tag
+    elif known_bus_topo > 0:
+        assert f'knowntopo{known_bus_topo}' in tag
 
     if savedir != '':
         os.makedirs(savedir, exist_ok=True)
