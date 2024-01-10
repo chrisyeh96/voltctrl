@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 import pickle
 import datetime as dt
 import os
@@ -9,21 +9,14 @@ from typing import Any
 import cvxpy as cp
 import matplotlib.pyplot as plt
 import numpy as np
-import pandapower as pp
 from tqdm.auto import tqdm
 
 from cbc.base import (
-    CBCBase, CBCConst, CBCConstWithNoise, cp_triangle_norm_sq,
-    project_into_X_set)
+    CBCBase, CBCConst, CBCConstWithNoise, project_into_X_set)
 from network_utils import (
-    create_56bus,
-    create_RX_from_net,
-    known_topology_constraints,
-    np_triangle_norm,
-    read_load_data)
-from robust_voltage_control_nonlinear import (
-    VoltPlot,
-    robust_voltage_control)
+    create_56bus, create_RX_from_net, meta_gen_X_set, read_load_data)
+from robust_voltage_control import (
+    VoltPlot, robust_voltage_control)
 from utils import wrap_write_newlines
 
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -35,67 +28,6 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 # hide top and right splines on plots
 plt.rcParams['axes.spines.right'] = False
 plt.rcParams['axes.spines.top'] = False
-
-
-def meta_gen_X_set(norm_bound: float, X_true: np.ndarray,
-                   net: pp.pandapowerNet,
-                   known_bus_topo: int = 0,
-                   known_line_params: int = 0
-                   ) -> Callable[[cp.Variable], list[cp.Constraint]]:
-    """Creates a function that, given a cp.Variable representing X,
-    returns constraints that describe its uncertainty set 𝒳.
-
-    Args
-    - norm_bound: parameter c such that
-        ‖var_X - X*‖_△ <= c * ‖X*‖_△
-    - X_true: shape [n, n], PSD
-    - known_bus_topo: int in [0, n], n = # of buses (excluding substation),
-        when topology is known for buses/lines in {0, ..., known_bus_topo-1}
-    - known_line_params: int in [0, known_bus_topo], when line parameters
-        (little x_{ij}) are known ∀ i,j in {0, ..., known_line_params-1}
-
-    Returns: function
-    """
-    assert known_line_params <= known_bus_topo
-
-    def gen_𝒳(var_X: cp.Variable) -> list[cp.Constraint]:
-        """Returns constraints describing 𝒳, the uncertainty set for X.
-
-        Constraints:
-        (1) var_X is PSD (enforced at cp.Variable initialization)
-        (2) var_X is entry-wise nonnegative
-        (3) largest entry in each row/col of var_X is on the diagonal
-        (4) ‖var_X - X*‖_△ <= c * ‖X*‖_△
-
-        Note: Constraint (1) does NOT automatically imply (3). See, e.g.,
-            https://math.stackexchange.com/a/3331028. Also related:
-            https://math.stackexchange.com/a/1382954.
-
-        Args
-        - var_X: cp.Variable, should already be constrained to be PSD
-
-        Returns: list of cp.Constraint
-        """
-        assert var_X.is_psd(), 'variable for X was not PSD-constrained'
-        norm_sq_diff = cp_triangle_norm_sq(var_X - X_true)
-        norm_X = np_triangle_norm(X_true)
-        𝒳 = [
-            var_X >= 0,  # entry-wise nonneg
-            var_X <= cp.diag(var_X)[:, None],  # diag has largest entry per row/col
-            norm_sq_diff <= (norm_bound * norm_X)**2
-        ]
-        if known_line_params > 0:
-            𝒳.append(
-                var_X[:known_line_params, :known_line_params]
-                == X_true[:known_line_params, :known_line_params])
-        if known_bus_topo > known_line_params:
-            topo_constraints = known_topology_constraints(
-                var_X, net, known_line_params, known_bus_topo)
-            𝒳.extend(topo_constraints)
-
-        tqdm.write('𝒳 = {X: ‖X̂-X‖_△ <= ' + f'{norm_bound * norm_X}' + '}')
-        return 𝒳
-    return gen_𝒳
 
 
 def run(ε: float, q_max: float, cbc_alg: str, eta: float,
@@ -322,7 +254,7 @@ if __name__ == '__main__':
             ε=0.1,
             q_max=0.24,
             cbc_alg='proj',
-            eta= 11.5, # 8.65,
+            eta=11.5,  # 8.65,
             norm_bound=1.0,
             norm_bound_init=None,
             noise=1.0,
