@@ -249,7 +249,7 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
                 Vpar=Vpar, X_true=X, obs_nodes=obs_nodes, log=log, seed=seed)
         else:
             sel = CBCProjectionWithNoise(
-                n=n, T=T-start, X_init=X_init, v=vpars[start],
+                n=n, T=T-start, X_init=X_init, eta_init=0, v=vpars[start],
                 gen_X_set=gen_X_set, eta=eta, nsamples=nsamples, δ=δ,
                 Vpar=Vpar, X_true=X, obs_nodes=obs_nodes, log=log, seed=seed)
         # save_dict.update(w_inds=sel.w_inds, vpar_inds=sel.vpar_inds)

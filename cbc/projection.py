@@ -364,7 +364,8 @@ class CBCProjection(CBCBase):
 
 
 class CBCProjectionWithNoise(CBCProjection):
-    def __init__(self, n: int, T: int, X_init: np.ndarray, v: np.ndarray,
+    def __init__(self, n: int, T: int, X_init: np.ndarray, eta_init: float,
+                 v: np.ndarray,
                  gen_X_set: Callable[[cp.Variable], list[cp.Constraint]],
                  eta: float, nsamples: int, δ: float,
                  Vpar: tuple[np.ndarray, np.ndarray],
@@ -386,7 +387,7 @@ class CBCProjectionWithNoise(CBCProjection):
         alpha = 0
         super().__init__(n, T, X_init, v, gen_X_set, eta, nsamples, alpha,
                          Vpar, X_true, obs_nodes, prune_constraints, log, seed)
-        self.eta = 0  # cached value
+        self.eta = eta_init  # cached value
 
     def _setup_prob(self) -> None:
         """Defines self.prob as the projection of Xprev into consistent set.
