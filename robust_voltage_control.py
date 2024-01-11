@@ -15,38 +15,45 @@ from voltplot import VoltPlot
 
 
 def robust_voltage_control(
-        p: np.ndarray, qe: np.ndarray,
+        vpars: np.ndarray,
         v_lims: tuple[Any, Any], q_lims: tuple[Any, Any], v_nom: Any,
-        X: np.ndarray, R: np.ndarray, require_X_psd: bool,
+        X: np.ndarray, require_X_psd: bool,
         Pv: np.ndarray, Pu: np.ndarray,
-        eta: float, ε: float, v_sub: float, β: float,
+        eta: float, ε: float, β: float,
         sel: Any, δ: float = 0.,
         ctrl_nodes: Sequence[int] | None = None,
         pbar: tqdm | None = None,
         log: tqdm | io.TextIOBase | None = None,
         volt_plot: VoltPlot | None = None, volt_plot_update: int = 100,
-        save_params_every: int = 100
+        save_params_every: int = 100,
+        change_net: tuple[int, np.ndarray] | None = None
         ) -> tuple[np.ndarray, np.ndarray, dict[str, list],
-                   dict[int, np.ndarray | tuple[np.ndarray, float]]]:
+                   dict[int, np.ndarray | tuple[np.ndarray, float]],
+                   tuple[list, list]]:
     """Runs robust voltage control.
 
+    If change_net is not None, then the order of events is:
+        sel.select(change_t-1)
+        qcs[change_t] is decided by robust controller
+        <TOPOLOGY CHANGE>
+        vs[change_t] = vpars_mod[change_t] + qcs[change_t] @ X_mod
+        sel.add_obs(change_t)
+        sel.select(change_t)  # this should raise CBCInfeasibleError
+
     Args
-    - p: np.array, shape [T, n], active power injection (MW)
-    - qe: np.array, shape [T, n], exogenous reactive power injection (MVar)
+    - vpars: np.array, shape [T, n], uncontrolled squared voltages (kV^2)
     - v_lims: tuple (v_min, v_max), squared voltage magnitude limits (kV^2)
         - v_min, v_max could be floats, or np.arrays of shape [n]
     - q_lims: tuple (q_min, q_max), reactive power injection limits (MVar)
         - q_min, q_max could be floats, or np.arrays of shape [n]
     - v_nom: float or np.array of shape [n], desired nominal voltage
-    - X: np.array, shape [n, n], line parameters for reactive power injection
-    - R: np.array, shape [n, n], line parameters for active power injection
+    - X: np.array, shape [n, n], true line parameters for reactive power injection
     - require_X_psd: bool, whether to require that selected X is always PSD
         - should usually be True, unless using least-squares controller
     - Pv: np.array, shape [n, n], quadratic (PSD) cost matrix for voltage
     - Pu: np.array, shape [n, n], quadratic (PSD) cost matrix for control
     - eta: float, noise bound (kV^2)
     - ε: float, robustness buffer (kV^2)
-    - v_sub: float, fixed squared voltage magnitude at substation (kV^2)
     - β: float, weight for slack variable
     - sel: nested convex body chasing object (e.g., CBCProjection)
     - δ: float, weight of noise term in CBC norm when learning eta
@@ -57,6 +64,9 @@ def robust_voltage_control(
     - volt_plot: VoltPlot
     - volt_plot_update: int, time steps between updating volt_plot
     - save_params_every: int, time steps between saving estimated model params
+    - change_net: tuple (change_t, X_mod)
+        - change_t: time step when X changes to X_mod
+        - X_mod: new X matrix
 
     Returns
     - vs: np.array, shape [T, n]
@@ -73,9 +83,13 @@ def robust_voltage_control(
         after observing vs[t], qcs[t].
         - if delta is None: np.array, shape [n, n]
         - if delta is given: tuple of (np.ndarray, float)
+    - consistent_arrs: tuple (consistent, consistent_05)
+        - consistent: whether parameters are consistent
+        - consistent_05: allows for 0.05 in vpar constraint violation, because
+            CVXPY empirically may still have up to 0.05 of constraint violation,
+            even when it solves SEL to "optimality"
     """
-    assert p.shape == qe.shape
-    T, n = qe.shape
+    T, n = vpars.shape
 
     if log is None:
         log = tqdm()
@@ -90,8 +104,11 @@ def robust_voltage_control(
 
     vs = sel.v  # shape [T, n], vs[t] denotes v(t)
     qcs = sel.q  # shape [T, n], qcs[t] denotes q^c(t)
-    vpars = qe @ X + p @ R + v_sub  # shape [T, n], vpars[t] denotes vpar(t)
-    assert np.array_equal(vs[0], vpars[0])
+
+    if not np.array_equal(vs[0], vpars[0]):
+        # usually, we want vs[0] == vpars[0]
+        # but this might not be true when the network changes
+        log.write('Not np.array_equal(vs[0], vpars[0]) - is there a bug?')
 
     # we need to use `u` as the variable instead of `qc_next` in order to
     # make the problem DPP-convex
@@ -141,11 +158,14 @@ def robust_voltage_control(
         pbar.reset(total=T-1)
 
     params: dict[int, np.ndarray | tuple[np.ndarray, float]] = {}
+    consistent_arr = []
+    consistent_05_arr = []
     for t in range(T-1):  # t = 0, ..., T-2
         # fill in Parameters
         if δ > 0:  # learning eta
             try:
                 X̂.value, etahat.value = sel.select(t)
+                consistent, consistent_05 = sel.is_consistent(t, X, eta)
             except CBCInfeasibleError:
                 break
             update_dists(dists, t, X_info=(X̂.value, X̂_prev, X),
@@ -155,9 +175,13 @@ def robust_voltage_control(
                 params[t] = (np.array(X̂.value), etahat_prev)
         else:
             X̂.value = sel.select(t)
+            consistent, consistent_05 = sel.is_consistent(t, X)
             update_dists(dists, t, X_info=(X̂.value, X̂_prev, X), log=log)
             if (t+1) % save_params_every == 0:
                 params[t] = np.array(X̂.value)  # save a copy
+
+        consistent_arr.append(consistent)
+        consistent_05_arr.append(consistent_05)
 
         X̂_prev = np.array(X̂.value)  # save a copy
         qct.value = qcs[t]
@@ -168,7 +192,12 @@ def robust_voltage_control(
             raise RuntimeError('robust controller infeasible')
 
         qcs[t+1] = qc_next.value
-        vs[t+1] = vpars[t+1] + qc_next.value @ X
+
+        if change_net is None or t+1 < change_net[0]:
+            vs[t+1] = vpars[t+1] + qc_next.value @ X
+        elif t+1 >= change_net[0]:
+            X_mod = change_net[1]
+            vs[t+1] = vpars[t+1] + qc_next.value @ X_mod
         sel.add_obs(t+1)
         # log.write(f't = {t}, ‖u‖_1 = {np.linalg.norm(u.value, 1)}')
 
@@ -190,7 +219,7 @@ def robust_voltage_control(
                          dists=(dists['t'], dists['X_true']))
         volt_plot.show(clear_display=False)
 
-    return vs, qcs, dists, params
+    return vs, qcs, dists, params, (consistent_arr, consistent_05_arr)
 
 
 def np_triangle_delta_norm(X: np.ndarray, η: float, δ: float) -> float:

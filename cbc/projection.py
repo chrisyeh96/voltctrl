@@ -362,6 +362,44 @@ class CBCProjection(CBCBase):
 
         return np.array(self.X_cache)  # return a copy
 
+    def is_consistent(self, t: int, X: np.ndarray) -> tuple[bool, bool]:
+        """Returns whether parameter estimate X is consistent with the
+        full set of observations up to time t.
+
+        Assumes that X is in 𝒳. Therefore, we only have to check the data-driven
+        constraints that define the consistent set.
+
+        Returns:
+        - consistent: whether X is consistent
+        - consistent_05: allows for 0.05 in vpar constraint violation, because
+            CVXPY empirically may still have up to 0.05 of constraint violation,
+            even when it solves SEL to "optimality"
+        """
+        if t == 0:
+            return True, True
+
+        obs = self.obs_nodes
+        ŵ = self.Δv[:t] - self.u[:t] @ X  # shape [t, n]
+        vpar_hat = self.v[:t+1] - self.q[:t+1] @ X  # shape [t+1, n]
+        ŵ_norm = np.max(np.abs(ŵ[:, obs]))
+
+        vpar_lower_violation = np.max(self.Vpar_min[obs] - vpar_hat[:, obs])
+        vpar_upper_violation = np.max(vpar_hat[:, obs] - self.Vpar_max[obs])
+
+        consistent = True
+        consistent_05 = True  # allows for 0.05 buffer in vpar violation
+
+        if ŵ_norm > self.eta:
+            consistent = False
+            consistent_05 = False
+
+        if vpar_lower_violation > 0 or vpar_upper_violation > 0:
+            consistent = False
+        if vpar_lower_violation > 0.05 or vpar_upper_violation > 0.05:
+            consistent_05 = False
+
+        return consistent, consistent_05
+
 
 class CBCProjectionWithNoise(CBCProjection):
     def __init__(self, n: int, T: int, X_init: np.ndarray, eta_init: float,
@@ -544,3 +582,44 @@ class CBCProjectionWithNoise(CBCProjection):
             self.log.write(f'{indent} CBC post opt: {msg}')
 
         return np.array(self.X_cache), self.eta  # return a copy
+
+    def is_consistent(self, t: int, X: np.ndarray, eta: float | None = None) -> tuple[bool, bool]:
+        """Returns whether parameter estimates (X, eta) are consistent with the
+        full set of observations up to time t.
+
+        Assumes that X is in 𝒳, and eta is in [0, etamax]. Therefore, we only
+        have to check the data-driven constraints that define the consistent set.
+
+        Returns:
+        - consistent: whether (X, eta) are consistent
+        - consistent_05: allows for 0.05 in vpar constraint violation, because
+            CVXPY empirically may still have up to 0.05 of constraint violation,
+            even when it solves SEL to "optimality"
+        """
+        if t == 0:
+            return True, True
+
+        if eta is None:
+            eta = self.eta
+
+        obs = self.obs_nodes
+        ŵ = self.Δv[:t] - self.u[:t] @ X  # shape [t, n]
+        vpar_hat = self.v[:t+1] - self.q[:t+1] @ X  # shape [t+1, n]
+        ŵ_norm = np.max(np.abs(ŵ[:, obs]))
+
+        vpar_lower_violation = np.max(self.Vpar_min[obs] - vpar_hat[:, obs])
+        vpar_upper_violation = np.max(vpar_hat[:, obs] - self.Vpar_max[obs])
+
+        consistent = True
+        consistent_05 = True  # allows for 0.05 buffer in vpar violation
+
+        if ŵ_norm > eta:
+            consistent = False
+            consistent_05 = False
+
+        if vpar_lower_violation > 0 or vpar_upper_violation > 0:
+            consistent = False
+        if vpar_lower_violation > 0.05 or vpar_upper_violation > 0.05:
+            consistent_05 = False
+
+        return consistent, consistent_05

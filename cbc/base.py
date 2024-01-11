@@ -150,6 +150,15 @@ class CBCBase:
         """
         raise NotImplementedError
 
+    def is_consistent(self, t: int, X: np.ndarray) -> tuple[bool | None, bool | None]:
+        """Returns whether parameter estimate X is consistent with the
+        full set of observations up to time t.
+
+        Assumes that X is in 𝒳. Therefore, we only have to check the data-driven
+        constraints that define the consistent set.
+        """
+        return None, None
+
 
 class CBCConst(CBCBase):
     """CBC class that always returns the initial X.

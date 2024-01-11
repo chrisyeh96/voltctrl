@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 import pickle
 import datetime as dt
+import io
 import os
 from typing import Any
 
@@ -28,6 +29,89 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 # hide top and right splines on plots
 plt.rcParams['axes.spines.right'] = False
 plt.rcParams['axes.spines.top'] = False
+
+
+def create_sel(
+    cbc_alg: str, n: int, T: int, X_init: np.ndarray, v: np.ndarray,
+    gen_X_set: Callable[[cp.Variable], list[cp.Constraint]],
+    X_true: np.ndarray, obs_nodes: Sequence[int] | None,
+    log: tqdm | io.TextIOBase | None, config: dict[str, Any],
+    eta: float, nsamples: int, alpha: float,
+    Vpar: tuple[np.ndarray, np.ndarray], δ: float, seed: int
+) -> tuple[CBCBase, bool]:
+    """
+    Args
+    - cbc_alg: str, one of ['const', 'lsq', 'proj', 'steiner']
+    - n: int, # of buses
+    - T: int, maximum # of time steps
+    - X_init: np.array, shape [n, n], initial guess for X matrix, must be
+        PSD and entry-wise >= 0
+    - v: np.array, shape [n], initial squared voltage magnitudes
+    - gen_X_set: function, takes an optimization variable (cp.Variable) and
+        returns a list of constraints (cp.Constraint) describing the
+        convex, compact uncertainty set for X
+    - X_true: np.array, shape [n, n], true X matrix, optional
+    - obs_nodes: list of int, nodes that we can observe voltages for
+    - log: object with .write() function, defaults to tqdm
+    - config: dict, only used by CBCProjection* and CBCSteiner
+    - eta: float, noise bound, only used by CBCProjection* and CBCSteiner
+    - nsamples: int, # of observations to use for defining the convex set
+    - alpha: float, weight on CBCProjection slack variable,
+        set to 0 to turn off slack variable
+    - Vpar: tuple (Vpar_min, Vpar_max), box description of Vpar
+        - each Vpar_* is a np.array of shape [n]
+    - δ: float, weight of noise term in CBC norm when learning eta,
+        only used by CBCProjectionWithNoise
+    - seed: int, only used by CBCProjection* and CBCSteiner
+
+    Returns:
+    - sel: CBC algorithm
+    - requires_X_psd: whether X returned by CBC algorithm will be PSD
+    """
+    sel: CBCBase
+    require_X_psd = True
+    if cbc_alg == 'const':
+        if δ == 0:
+            sel = CBCConst(
+                n=n, T=T, X_init=X_init, v=v,
+                gen_X_set=gen_X_set, X_true=X_true, obs_nodes=obs_nodes, log=log)
+        else:
+            sel = CBCConstWithNoise(
+                n=n, T=T, X_init=X_init, v=v,
+                gen_X_set=gen_X_set, X_true=X_true, obs_nodes=obs_nodes, log=log)
+    elif cbc_alg == 'lsq':
+        assert δ == 0
+        from cbc.lsq import CBCLsq
+        sel = CBCLsq(
+            n=n, T=T, X_init=X_init, v=v,
+            gen_X_set=gen_X_set, X_true=X_true, obs_nodes=obs_nodes, log=log)
+        require_X_psd = False
+    elif cbc_alg == 'proj':
+        from cbc.projection import CBCProjection, CBCProjectionWithNoise
+        config.update(alpha=alpha, nsamples=nsamples)
+        if δ == 0:
+            sel = CBCProjection(
+                n=n, T=T, X_init=X_init, v=v,
+                gen_X_set=gen_X_set, eta=eta, nsamples=nsamples, alpha=alpha,
+                Vpar=Vpar, X_true=X_true, obs_nodes=obs_nodes, log=log, seed=seed)
+        else:
+            sel = CBCProjectionWithNoise(
+                n=n, T=T, X_init=X_init, eta_init=0, v=v,
+                gen_X_set=gen_X_set, eta=eta, nsamples=nsamples, δ=δ,
+                Vpar=Vpar, X_true=X_true, obs_nodes=obs_nodes, log=log, seed=seed)
+        # save_dict.update(w_inds=sel.w_inds, vpar_inds=sel.vpar_inds)
+    elif cbc_alg == 'steiner':
+        assert δ == 0
+        from cbc.steiner import CBCSteiner
+        dim = n * (n+1) // 2
+        config.update(nsamples=nsamples, nsamples_steiner=dim)
+        sel = CBCSteiner(
+            eta=eta, n=n, T=T, nsamples=nsamples, nsamples_steiner=dim,
+            v=v, gen_X_set=gen_X_set, Vpar=Vpar,
+            X_init=X_init, X_true=X_true, obs_nodes=obs_nodes, log=log, seed=seed)
+    else:
+        raise ValueError('unknown cbc_alg')
+    return sel, require_X_psd
 
 
 def run(ε: float, q_max: float, cbc_alg: str, eta: float,
@@ -71,6 +155,7 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
     Returns: str, filename (without extension)
     """
     assert δ >= 0, 'δ must be >= 0'
+    assert 'topochange' in tag
     if known_line_params > 0:
         assert f'knownlines{known_line_params}' in tag
     elif known_bus_topo > 0:
@@ -107,6 +192,14 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
     R, X = create_RX_from_net(net, noise=0)  # true R and X
     p, qe = read_load_data()  # in MW and MVar
     T, n = p.shape
+    change_t = int(T/2)  # = 7210
+
+    # change edges (33, 40) -> (1, 40), and (46, 48) -> (10, 48)
+    # - here, buses are indexed with substation = 0, then other nodes are 1,...,55
+    net_mod = create_56bus()
+    net_mod.line.loc[39, 'from_bus'] = 1
+    net_mod.line.loc[47, 'from_bus'] = 10
+    R_mod, X_mod = create_RX_from_net(net_mod)
 
     # ==== FIXED PARAMETERS ====
     v_min, v_max = (11.4**2, 12.6**2)  # +/-5%, units kV^2
@@ -114,8 +207,11 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
     v_sub = v_nom  # fixed squared voltage magnitude at substation, units kV^2
 
     vpars = qe @ X + p @ R + v_sub  # shape [T, n]
-    Vpar_min = np.min(vpars, axis=0)  # shape [n]
-    Vpar_max = np.max(vpars, axis=0)  # shape [n]
+    vpars_mod = qe @ X_mod + p @ R_mod + v_sub  # shape [T, n]
+
+    vpars_combined = np.concatenate([vpars[:change_t], vpars_mod[change_t:]])
+    Vpar_min = np.min(vpars_combined, axis=0)  # shape [n]
+    Vpar_max = np.max(vpars_combined, axis=0)  # shape [n]
     Vpar = (Vpar_min, Vpar_max)
 
     Pv = 0.1
@@ -158,70 +254,73 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
         norm_bound=norm_bound, X_true=X, net=net,
         known_bus_topo=known_bus_topo, known_line_params=known_line_params)
 
-    sel: CBCBase
-    require_X_psd = True
-    if cbc_alg == 'const':
-        if δ == 0:
-            sel = CBCConst(
-                n=n, T=T, X_init=X_init, v=vpars[start],
-                gen_X_set=gen_X_set, X_true=X, obs_nodes=obs_nodes, log=log)
-        else:
-            sel = CBCConstWithNoise(
-                n=n, T=T, X_init=X_init, v=vpars[start],
-                gen_X_set=gen_X_set, X_true=X, obs_nodes=obs_nodes, log=log)
-    elif cbc_alg == 'lsq':
-        assert δ == 0
-        from cbc.lsq import CBCLsq
-        sel = CBCLsq(
-            n=n, T=T, X_init=X_init, v=vpars[start],
-            gen_X_set=gen_X_set, X_true=X, obs_nodes=obs_nodes, log=log)
-        require_X_psd = False
-    elif cbc_alg == 'proj':
-        from cbc.projection import CBCProjection, CBCProjectionWithNoise
-        config.update(alpha=alpha, nsamples=nsamples)
-        if δ == 0:
-            sel = CBCProjection(
-                n=n, T=T-start, X_init=X_init, v=vpars[start],
-                gen_X_set=gen_X_set, eta=eta, nsamples=nsamples, alpha=alpha,
-                Vpar=Vpar, X_true=X, obs_nodes=obs_nodes, log=log, seed=seed)
-        else:
-            sel = CBCProjectionWithNoise(
-                n=n, T=T-start, X_init=X_init, eta_init=0, v=vpars[start],
-                gen_X_set=gen_X_set, eta=eta, nsamples=nsamples, δ=δ,
-                Vpar=Vpar, X_true=X, obs_nodes=obs_nodes, log=log, seed=seed)
-        # save_dict.update(w_inds=sel.w_inds, vpar_inds=sel.vpar_inds)
-    elif cbc_alg == 'steiner':
-        assert δ == 0
-        from cbc.steiner import CBCSteiner
-        dim = n * (n+1) // 2
-        config.update(nsamples=nsamples, nsamples_steiner=dim)
-        sel = CBCSteiner(
-            eta=eta, n=n, T=T-start, nsamples=nsamples, nsamples_steiner=dim,
-            v=vpars[start], gen_X_set=gen_X_set, Vpar=Vpar,
-            X_init=X_init, X_true=X, obs_nodes=obs_nodes, log=log, seed=seed)
-    else:
-        raise ValueError('unknown cbc_alg')
-
     volt_plot = VoltPlot(
         v_lims=(np.sqrt(v_min), np.sqrt(v_max)),
         q_lims=(-q_max, q_max))
 
-    vs, qcs, dists, params, consistent_arrs = robust_voltage_control(
-        vpars=vpars[start:T],
+    pkl_name = None
+    # pkl_name = 'CBCproj_δ20_η10_noise1.0_perm_norm1.0_seed8_knownlines14_topochange_20240110_120849.pkl'
+    # pkl_name = 'CBCproj_δ20_η10_noise1.0_perm_norm1.0_seed9_knownlines14_topochange_20240110_125001.pkl'
+    # pkl_name = 'CBCproj_δ20_η10_noise1.0_perm_norm1.0_seed8_topochange_20240110_120831.pkl'
+    # pkl_name = 'CBCproj_δ20_η10_noise1.0_perm_norm1.0_seed9_topochange_20240110_140752.pkl'
+    if pkl_name is None:
+        sel, require_X_psd = create_sel(
+            cbc_alg=cbc_alg, n=n, T=T-start, X_init=X_init, v=vpars[start],
+            gen_X_set=gen_X_set, X_true=X, obs_nodes=obs_nodes, log=log,
+            config=config, eta=eta, nsamples=nsamples, alpha=alpha, Vpar=Vpar,
+            δ=δ, seed=seed)
+
+        vs, qcs, dists, params, consistent_arrs = robust_voltage_control(
+            vpars=vpars_combined[start:T],
+            v_lims=(v_min, v_max), q_lims=(-q_max, q_max), v_nom=v_nom,
+            X=X, require_X_psd=require_X_psd, Pv=Pv * np.eye(n), Pu=Pu * np.eye(n),
+            eta=eta, ε=ε, β=β, sel=sel, δ=δ,
+            ctrl_nodes=ctrl_nodes, pbar=pbar, log=log,
+            volt_plot=volt_plot if is_interactive else None,
+            change_net=(change_t, X_mod))
+
+        # save data
+        with open(f'{filename}.pkl', 'wb') as f:
+            pickle.dump(file=f, obj=dict(
+                vs=vs, qcs=qcs, dists=dists, params=params, consistent_arrs=consistent_arrs,
+                config=config, **save_dict))
+
+    else:
+        with open(os.path.join(savedir, pkl_name), 'rb') as f:
+            pkl = pickle.load(f)
+            vs = pkl['vs']
+            qcs = pkl['qcs']
+            dists = pkl['dists']
+            params = pkl['params']
+            consistent_arrs = pkl['consistent_arrs']
+
+    assert np.all(vs[change_t + 1] == 0) and np.all(qcs[change_t + 1] == 0)
+
+    start = change_t
+    sel2, require_X_psd = create_sel(
+        cbc_alg=cbc_alg, n=n, T=T-start, X_init=X_init, v=vs[change_t],
+        gen_X_set=gen_X_set, X_true=X_mod, obs_nodes=obs_nodes, log=log,
+        config=config, eta=eta, nsamples=nsamples, alpha=alpha, Vpar=Vpar,
+        δ=δ, seed=seed)
+    sel2.q[0] = qcs[change_t]
+
+    vs2, qcs2, dists2, params2, consistent_arrs2 = robust_voltage_control(
+        vpars=vpars_combined[start:T],
         v_lims=(v_min, v_max), q_lims=(-q_max, q_max), v_nom=v_nom,
-        X=X, require_X_psd=require_X_psd, Pv=Pv * np.eye(n), Pu=Pu * np.eye(n),
-        eta=eta, ε=ε, β=β, sel=sel, δ=δ,
+        X=X_mod, require_X_psd=require_X_psd, Pv=Pv * np.eye(n), Pu=Pu * np.eye(n),
+        eta=eta, ε=ε, β=β, sel=sel2, δ=δ,
         ctrl_nodes=ctrl_nodes, pbar=pbar, log=log,
         volt_plot=volt_plot if is_interactive else None)
 
     elapsed = (dt.datetime.now(tz) - start_time).total_seconds()
 
-    # save data
+    # overwrite with additional data
     with open(f'{filename}.pkl', 'wb') as f:
         pickle.dump(file=f, obj=dict(
-            vs=vs, qcs=qcs, dists=dists, params=params,
-            consistent_arrs=consistent_arrs, config=config, elapsed=elapsed,
-            **save_dict))
+            vs=vs, qcs=qcs, dists=dists, params=params, consistent_arrs=consistent_arrs,
+            vs2=vs2, qcs2=qcs2, dists2=dists2, params2=params2, consistent_arrs2=consistent_arrs2,
+            config=config,
+            elapsed=elapsed, **save_dict))
 
     # plot and save figure
     volt_plot.update(qcs=qcs,
@@ -242,7 +341,7 @@ if __name__ == '__main__':
     # exclude = np.array([8, 18, 21, 30, 39, 45, 54]) - 1
     # obs_nodes = np.setdiff1d(all_nodes, exclude).tolist()
     obs_nodes = None
-    for seed in [8, 9, 10, 11]:  # for norm_bound=1.0, noise=1.0
+    for seed in [8]:  # 8, 9, 10, 11]:  # for norm_bound=1.0, noise=1.0
     # for seed in [55, 56, 57, 58]:  # for norm_bound=0.5, noise=0.5
         run(
             ε=0.1,
@@ -253,16 +352,16 @@ if __name__ == '__main__':
             norm_bound_init=None,
             noise=1.0,
             modify='perm',
-            δ=500,
+            δ=20,
             obs_nodes=obs_nodes,
             ctrl_nodes=obs_nodes,
-            known_line_params=14,
+            known_line_params=0,
             known_bus_topo=14,
             seed=seed,
             pbar=tqdm(),
             is_interactive=False,
             savedir=savedir,
-            tag='_knownlines14')  # choose from ['', '_partialobs', '_partialctrl', '_knowntopoX', '_knownlinesX']
+            tag='_knowntopo14_topochange')  # choose from ['', '_partialobs', '_partialctrl', '_knowntopoX', '_knownlinesX']
 
     # fixed X*, known eta
     # run(
