@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import io
+import os
+import pickle
+from typing import Any
 
 import cvxpy as cp
+import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
-from typing import Any
 
 
 def solve_prob(prob: cp.Problem, log: tqdm | io.TextIOBase | None = None,
@@ -39,3 +42,14 @@ def wrap_write_newlines(f: Any) -> Any:
         f.flush()
     f.write = new_write
     return f
+
+
+def savefig(fig: plt.Figure, plots_dir: str, filename: str, **kwargs) -> None:
+    path = os.path.join(plots_dir, filename)
+    defaults = dict(dpi=300, pad_inches=0, bbox_inches='tight', facecolor='white')
+    fig.savefig(path, **(defaults | kwargs))
+
+
+def load_pkl(path: str) -> Any:
+    with open(path, 'rb') as f:
+        return pickle.load(f)
