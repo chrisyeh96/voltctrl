@@ -174,8 +174,11 @@ def robust_voltage_control(
             if (t+1) % save_params_every == 0:
                 params[t] = (np.array(X̂.value), etahat_prev)
         else:
-            X̂.value = sel.select(t)
-            consistent, consistent_05 = sel.is_consistent(t, X)
+            try:
+                X̂.value = sel.select(t)
+                consistent, consistent_05 = sel.is_consistent(t, X)
+            except CBCInfeasibleError:
+                break
             update_dists(dists, t, X_info=(X̂.value, X̂_prev, X), log=log)
             if (t+1) % save_params_every == 0:
                 params[t] = np.array(X̂.value)  # save a copy

@@ -319,8 +319,7 @@ def run(ε: float, q_max: float, cbc_alg: str, eta: float,
         pickle.dump(file=f, obj=dict(
             vs=vs, qcs=qcs, dists=dists, params=params, consistent_arrs=consistent_arrs,
             vs2=vs2, qcs2=qcs2, dists2=dists2, params2=params2, consistent_arrs2=consistent_arrs2,
-            config=config,
-            elapsed=elapsed, **save_dict))
+            config=config, elapsed=elapsed, **save_dict))
 
     # plot and save figure
     volt_plot.update(qcs=qcs,
