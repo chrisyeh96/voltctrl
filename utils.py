@@ -44,7 +44,7 @@ def wrap_write_newlines(f: Any) -> Any:
     return f
 
 
-def savefig(fig: plt.Figure, plots_dir: str, filename: str, **kwargs) -> None:
+def savefig(fig: plt.Figure, plots_dir: str, filename: str, **kwargs: Any) -> None:
     path = os.path.join(plots_dir, filename)
     defaults = dict(dpi=300, pad_inches=0, bbox_inches='tight', facecolor='white')
     fig.savefig(path, **(defaults | kwargs))
